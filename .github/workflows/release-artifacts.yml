@@ -1,0 +1,227 @@
+name: Release Artifacts
+
+on:
+  push:
+    branches:
+      - "release/**"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release-artifacts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio pytest
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="$(cat VERSION)"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Build firmware binary
+        working-directory: firmware-esp32
+        run: pio run -e esp32s3
+
+      - name: Build filesystem image
+        working-directory: firmware-esp32
+        run: pio run -e esp32s3 -t buildfs
+
+      - name: Run unit tests
+        working-directory: firmware-esp32
+        run: pio test -e native
+
+      - name: Run integration tests
+        working-directory: firmware-esp32/integration
+        run: pytest -q
+
+      - name: Prepare artifact bundle
+        run: |
+          set -euo pipefail
+          mkdir -p release-bundle
+          BUILD_DIR="firmware-esp32/.pio/build/esp32s3"
+
+          cp "$BUILD_DIR/firmware.bin" release-bundle/
+          cp "$BUILD_DIR/bootloader.bin" release-bundle/
+          cp "$BUILD_DIR/partitions.bin" release-bundle/
+          cp "$BUILD_DIR/littlefs.bin" release-bundle/
+
+          BOOT_APP0="$(python - <<'PY'
+          import glob
+          paths = glob.glob('/home/runner/.platformio/packages/framework-arduinoespressif32/**/boot_app0.bin', recursive=True)
+          print(paths[0] if paths else '')
+          PY
+          )"
+          if [ -n "$BOOT_APP0" ]; then
+            cp "$BOOT_APP0" release-bundle/boot_app0.bin
+          fi
+
+          APP0_MAC_ARGS=""
+          APP0_DOC=""
+          if [ -f "release-bundle/boot_app0.bin" ]; then
+            APP0_MAC_ARGS="0xe000 \"\$DIR/boot_app0.bin\" "
+            APP0_DOC="- boot_app0.bin"
+          fi
+
+          FS_OFFSET="$(python - <<'PY'
+          import struct
+
+          with open('firmware-esp32/.pio/build/esp32s3/partitions.bin', 'rb') as f:
+              data = f.read()
+
+          offset = None
+          for i in range(0, len(data), 32):
+              chunk = data[i:i+32]
+              if len(chunk) < 32:
+                  continue
+              magic, ptype, subtype, pos, size, label, flags = struct.unpack('<HBBLL16sL', chunk)
+              if magic != 0x50AA:
+                  continue
+              name = label.split(b'\\x00', 1)[0].decode('ascii', errors='ignore')
+              if ptype == 0x01 and (subtype == 0x82 or name in ('spiffs', 'littlefs', 'storage')):
+                  offset = pos
+                  break
+
+          if offset is None:
+              raise SystemExit('Failed to detect filesystem partition offset from partitions.bin')
+
+          print(hex(offset))
+          PY
+          )"
+
+          cat > release-bundle/flash_macos_linux.sh <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          PORT="\${1:-/dev/ttyUSB0}"
+          BAUD="\${2:-921600}"
+          DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+
+          python3 -m pip install --user --upgrade esptool
+          python3 -m esptool --chip esp32s3 --port "\$PORT" --baud "\$BAUD" --before default_reset --after hard_reset write_flash -z \
+            0x1000 "\$DIR/bootloader.bin" \
+            0x8000 "\$DIR/partitions.bin" \
+            ${APP0_MAC_ARGS}0x10000 "\$DIR/firmware.bin" \
+            ${FS_OFFSET} "\$DIR/littlefs.bin"
+          EOF
+          chmod +x release-bundle/flash_macos_linux.sh
+
+          cat > release-bundle/flash_windows.ps1 <<'EOF'
+          param(
+            [string]\$Port = \"COM3\",
+            [int]\$Baud = 921600
+          )
+          \$ErrorActionPreference = \"Stop\"
+          \$Dir = Split-Path -Parent \$MyInvocation.MyCommand.Path
+
+          py -m pip install --user --upgrade esptool
+          \$flashArgs = @(
+            \"--chip\", \"esp32s3\",
+            \"--port\", \$Port,
+            \"--baud\", \"\$Baud\",
+            \"--before\", \"default_reset\",
+            \"--after\", \"hard_reset\",
+            \"write_flash\", \"-z\",
+            \"0x1000\", \"\$Dir\\bootloader.bin\",
+            \"0x8000\", \"\$Dir\\partitions.bin\",
+            \"0x10000\", \"\$Dir\\firmware.bin\",
+            \"__FS_OFFSET__\", \"\$Dir\\littlefs.bin\"
+          )
+
+          if (Test-Path \"\$Dir\\boot_app0.bin\") {
+            \$insert = @(\"0xe000\", \"\$Dir\\boot_app0.bin\")
+            \$flashArgs = \$flashArgs[0..15] + \$insert + \$flashArgs[16..(\$flashArgs.Length - 1)]
+          }
+
+          py -m esptool @flashArgs
+          EOF
+          sed -i "s/__FS_OFFSET__/${FS_OFFSET}/g" release-bundle/flash_windows.ps1
+
+          cat > release-bundle/FLASHING.md <<EOF
+          # Flashing Release (ESP32-S3)
+
+          This bundle contains all required images for a complete flash:
+
+          - bootloader.bin
+          - partitions.bin
+          ${APP0_DOC}
+          - firmware.bin
+          - littlefs.bin
+
+          Filesystem partition offset: ${FS_OFFSET}
+
+          ## macOS / Linux
+
+          1. Connect ESP32 and find serial port (for example \`/dev/ttyUSB0\` or \`/dev/tty.usbserial-*\`).
+          2. Run:
+
+          \`\`\`bash
+          ./flash_macos_linux.sh /dev/ttyUSB0 921600
+          \`\`\`
+
+          ## Windows
+
+          1. Connect ESP32 and check COM port in Device Manager (for example \`COM3\`).
+          2. In PowerShell run:
+
+          \`\`\`powershell
+          ./flash_windows.ps1 -Port COM3 -Baud 921600
+          \`\`\`
+
+          ## Manual esptool command
+
+          \`\`\`bash
+          esptool --chip esp32s3 --port <PORT> --baud 921600 write_flash -z \\
+            0x1000 bootloader.bin \\
+            0x8000 partitions.bin \\
+          $(if [ -n "$APP0_DOC" ]; then echo "  0xe000 boot_app0.bin \\\\"; fi)
+            0x10000 firmware.bin \\
+            ${FS_OFFSET} littlefs.bin
+          \`\`\`
+          EOF
+
+          cp VERSION release-bundle/
+          cp CHANGELOG.md release-bundle/
+          printf "branch=%s\ncommit=%s\n" "${GITHUB_REF_NAME}" "${GITHUB_SHA}" > release-bundle/build-info.txt
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: peristaltic-${{ steps.version.outputs.version }}-${{ steps.version.outputs.short_sha }}
+          path: release-bundle/
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          body_path: CHANGELOG.md
+          files: |
+            release-bundle/firmware.bin
+            release-bundle/littlefs.bin
+            release-bundle/bootloader.bin
+            release-bundle/partitions.bin
+            release-bundle/boot_app0.bin
+            release-bundle/flash_macos_linux.sh
+            release-bundle/flash_windows.ps1
+            release-bundle/FLASHING.md
+            release-bundle/VERSION
+            release-bundle/CHANGELOG.md
+            release-bundle/build-info.txt
+          fail_on_unmatched_files: false

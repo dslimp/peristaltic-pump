@@ -1,0 +1,465 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Peristaltic Pump</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <div class="top">
+      <div>
+        <h1 class="title" id="titleMain">Peristaltic Pump</h1>
+        <p class="subtitle" id="subtitleMain">Local control panel</p>
+      </div>
+      <div class="chips">
+        <span class="chip"><span id="chipModeLabel">mode</span>: <b id="modeChip">-</b></span>
+        <span class="chip"><span id="chipDirLabel">dir</span>: <b id="dirChip">-</b></span>
+        <span class="chip"><span id="chipTimeLabel">time</span>: <b id="timeChip">-</b></span>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button id="tabControlBtn" class="tabbtn active" onclick="showTab('control')">Control</button>
+      <button id="tabCalBtn" class="tabbtn" onclick="showTab('cal')">Calibration / Settings</button>
+      <button id="tabScheduleBtn" class="tabbtn" onclick="showTab('schedule')">Schedule</button>
+      <button id="tabGrowthBtn" class="tabbtn" style="display:none" onclick="showTab('growth')">Growth Program</button>
+      <button id="tabHaBtn" class="tabbtn" onclick="showTab('ha')">Home Assistant</button>
+    </div>
+
+    <div id="tabControl" class="tab active">
+      <div class="layout">
+        <div class="panel">
+          <h3 id="driveTitle">Drive</h3>
+          <div class="row">
+            <div class="field">
+              <label id="motorLabel">Motor</label>
+              <select id="motorSelect"></select>
+            </div>
+          </div>
+          <div class="row">
+            <button id="stopBtn" class="btn stop main" onclick="stopPump()" disabled>Stop</button>
+            <div class="toggle">
+              <input id="reverse" type="checkbox">
+              <label for="reverse" id="reverseLabel">Reverse</label>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label id="flowLabel">Flow (L/h)</label>
+              <input id="flowLph" value="5.0" type="number" step="0.1">
+            </div>
+            <button class="btn" id="startFlowBtn" onclick="startFlow()">Start</button>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label id="dosingLabel">Dosing (ml)</label>
+              <input id="dosingMl" value="500" type="number">
+            </div>
+            <button class="btn" id="startDosingBtn" onclick="startDosing()">Start</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3 id="liveMetricsTitle">Live Metrics</h3>
+          <div class="metrics">
+            <div class="metric"><div class="k" id="metricModeLabel">Mode</div><div class="v small" id="modeName">-</div></div>
+            <div class="metric"><div class="k" id="metricDirectionLabel">Direction</div><div class="v small" id="directionName">-</div></div>
+            <div class="metric"><div class="k" id="metricCurrentFlowLabel">Current Flow (L/h)</div><div class="v" id="currentFlowLph">0</div></div>
+            <div class="metric"><div class="k" id="metricTotalPumpedLabel">Total Pumped (L)</div><div class="v" id="totalPumpedL">0</div></div>
+            <div class="metric"><div class="k" id="metricDosingLeftLabel">Dosing Left (ml)</div><div class="v" id="dosingLeftMl">0</div></div>
+          </div>
+          <div id="motorsOverview" class="schedule-list"></div>
+        </div>
+      </div>
+
+      <details class="panel">
+        <summary id="rawStateSummary">Raw State JSON</summary>
+        <pre id="state">loading...</pre>
+      </details>
+    </div>
+
+    <div id="tabCal" class="tab">
+      <div class="settings-grid">
+        <div class="panel settings-subpanel">
+          <h3 id="calSettingsTitle">Calibration / Settings</h3>
+          <div class="row">
+            <div class="field"><label id="mlCwLabel">ml/rev CW</label><input id="mlCw" value="2.6" type="number" step="0.01"></div>
+            <div class="field"><label id="mlCcwLabel">ml/rev CCW</label><input id="mlCcw" value="2.6" type="number" step="0.01"></div>
+            <div class="field"><label id="maxFlowLabel">Max Flow (L/h)</label><input id="maxFlowLph" value="30" type="number" min="0.1" step="0.1"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label id="dosingFlowLabel">Dosing Flow (L/h)</label><input id="dFlow" value="28.0" type="number" step="0.1"></div>
+          </div>
+        </div>
+
+        <div class="panel settings-subpanel">
+          <h3>System</h3>
+          <div class="row">
+            <div class="field"><label id="ntpServerLabel">NTP Server</label><input id="ntpServer" value="time.google.com" type="text"></div>
+            <div class="field">
+              <label id="tzOffsetLabel">Timezone Offset (minutes)</label>
+              <select id="tzOffsetMinutes"></select>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label id="uiLanguageLabel">Language</label>
+              <select id="uiLanguage">
+                <option value="en">English</option>
+                <option value="ru">Русский</option>
+              </select>
+            </div>
+            <div class="toggle">
+              <input id="growthProgramEnabled" type="checkbox">
+              <label for="growthProgramEnabled" id="growthProgramEnabledLabel">Enable Growth Program tab</label>
+            </div>
+            <div class="toggle">
+              <input id="phRegulationEnabled" type="checkbox">
+              <label for="phRegulationEnabled" id="phRegulationEnabledLabel">Enable pH regulation in growth schedule</label>
+            </div>
+          </div>
+          <div class="row settings-actions">
+            <button class="btn ghost" id="saveUiLangBtn" onclick="saveUiLanguage()">Save Language</button>
+            <button class="btn" id="saveSettingsBtn" onclick="saveSettings()">Save Settings</button>
+          </div>
+        </div>
+
+        <div class="panel settings-subpanel">
+          <h3>Expansion</h3>
+          <div class="row">
+            <div class="toggle">
+              <input id="expansionEnabled" type="checkbox">
+              <label for="expansionEnabled" id="expansionEnabledLabel">Expansion enabled</label>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label id="expansionInterfaceLabel">Expansion interface</label>
+              <select id="expansionInterface">
+                <option value="i2c">I2C</option>
+                <option value="rs485">RS485</option>
+                <option value="uart">UART</option>
+              </select>
+            </div>
+            <div class="field">
+              <label id="expansionMotorCountLabel">Expansion motors (0-4)</label>
+              <input id="expansionMotorCount" value="0" type="number" min="0" max="4" step="1">
+            </div>
+          </div>
+        </div>
+
+        <div class="panel settings-subpanel settings-span-2">
+          <h3 id="motorAliasesTitle">Motor Aliases</h3>
+          <p class="help">Aliases are applied after Save Settings.</p>
+          <div id="motorAliasesEditor" class="schedule-list"></div>
+        </div>
+
+        <div class="panel settings-subpanel">
+          <h3 id="guidedCalTitle">Guided Calibration</h3>
+          <div class="row">
+            <div class="field"><label id="dirLabel">Direction</label><select id="dir"><option value="cw">CW</option><option value="ccw">CCW</option></select></div>
+            <div class="field"><label id="revolutionsLabel">Revolutions</label><input id="revs" value="200" type="number"></div>
+          </div>
+          <div class="row settings-actions">
+            <button class="btn" id="runCalibrationBtn" onclick="runCalibration()">Run Calibration</button>
+          </div>
+          <div class="row">
+            <div class="field"><label id="measuredMlLabel">Measured ml</label><input id="measuredMl" value="520" type="number" step="0.1"></div>
+            <button class="btn ghost" id="applyCalibrationBtn" onclick="applyCalibration()">Apply</button>
+          </div>
+        </div>
+
+        <div class="panel settings-subpanel">
+          <h3 id="webSecurityTitle">Web Security (Basic Auth)</h3>
+          <div class="row">
+            <div class="toggle">
+              <input id="authEnabled" type="checkbox">
+              <label for="authEnabled" id="authEnabledLabel">Enable authentication</label>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field"><label id="usernameLabel">Username</label><input id="authUser" value="admin" type="text"></div>
+            <div class="field"><label id="passwordLabel">Password</label><input id="authPass" value="admin" type="password"></div>
+            <button class="btn" id="saveAuthBtn" onclick="saveSecurity()">Save Auth</button>
+          </div>
+        </div>
+
+        <div class="panel settings-subpanel settings-span-2">
+          <h3 id="fwUpdateTitle">Firmware Update (GitHub Releases)</h3>
+          <div class="row">
+            <div class="field">
+              <label id="fwRepoLabel">GitHub Repo (owner/repo)</label>
+              <input id="fwRepo" type="text" placeholder="dslimp/peristaltic-pump">
+            </div>
+            <div class="field">
+              <label id="fwAssetLabel">Asset Name (.bin)</label>
+              <input id="fwAssetName" type="text" value="firmware.bin">
+            </div>
+            <div class="field">
+              <label id="fwFsAssetLabel">Filesystem Asset (.bin)</label>
+              <input id="fwFsAssetName" type="text" value="littlefs.bin">
+            </div>
+            <button class="btn ghost" id="fwSaveConfigBtn" onclick="saveFirmwareConfig()">Save OTA Config</button>
+          </div>
+          <div class="row">
+            <button class="btn ghost" id="fwLoadReleasesBtn" onclick="loadFirmwareReleases()">Load Releases</button>
+            <button class="btn" id="fwUpdateLatestBtn" onclick="updateFirmwareLatest()">Update to Latest</button>
+          </div>
+          <div class="row">
+            <div class="field">
+              <label id="fwReleaseSelectLabel">Release Tag</label>
+              <select id="fwReleaseSelect"></select>
+            </div>
+            <button class="btn" id="fwUpdateSelectedBtn" onclick="updateFirmwareSelected()">Update Selected</button>
+          </div>
+          <div class="row">
+              <div class="field">
+              <label id="fwLocalUrlLabel">Firmware URL (.bin)</label>
+              <input id="fwUrl" type="text" placeholder="https://github.com/dslimp/peristaltic-pump/releases/latest/download/firmware.bin">
+            </div>
+            <div class="field">
+              <label id="fwLocalFsUrlLabel">Filesystem URL (.bin)</label>
+              <input id="fwFsUrl" type="text" placeholder="https://github.com/dslimp/peristaltic-pump/releases/latest/download/littlefs.bin">
+            </div>
+            <button class="btn ghost" id="fwUpdateUrlBtn" onclick="updateFirmwareFromUrl()">Update from URL</button>
+          </div>
+          <p class="help" id="fwStatusText">Firmware update is idle.</p>
+        </div>
+      </div>
+    </div>
+
+  <div id="tabSchedule" class="tab">
+    <div class="panel">
+      <h3 id="scheduleTitle">Schedule Dosing</h3>
+      <div class="row">
+        <div class="field">
+          <label id="schNameLabel">Name</label>
+          <input id="schName" type="text" maxlength="32" value="">
+        </div>
+        <div class="field">
+          <label id="scheduleMotorLabel">Motor</label>
+          <select id="schMotorId"></select>
+        </div>
+        <div class="field"><label id="schHourLabel">Hour</label><input id="schHour" type="number" min="0" max="23" value="9"></div>
+        <div class="field"><label id="schMinuteLabel">Minute</label><input id="schMinute" type="number" min="0" max="59" value="0"></div>
+        <div class="field"><label id="schVolumeLabel">Volume (ml)</label><input id="schVolumeMl" type="number" min="1" value="50"></div>
+        <div class="toggle"><input id="schReverse" type="checkbox"><label for="schReverse" id="schReverseLabel">Reverse</label></div>
+        <div class="toggle"><input id="schEnabled" type="checkbox" checked><label for="schEnabled" id="schEnabledLabel">Enabled</label></div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label id="daysOfWeekLabel">Days of week</label>
+          <div class="weekday-grid">
+            <label class="weekday"><input id="schDay0" type="checkbox" checked><span id="schDay0Label">Mon</span></label>
+            <label class="weekday"><input id="schDay1" type="checkbox" checked><span id="schDay1Label">Tue</span></label>
+            <label class="weekday"><input id="schDay2" type="checkbox" checked><span id="schDay2Label">Wed</span></label>
+            <label class="weekday"><input id="schDay3" type="checkbox" checked><span id="schDay3Label">Thu</span></label>
+            <label class="weekday"><input id="schDay4" type="checkbox" checked><span id="schDay4Label">Fri</span></label>
+            <label class="weekday"><input id="schDay5" type="checkbox" checked><span id="schDay5Label">Sat</span></label>
+            <label class="weekday"><input id="schDay6" type="checkbox" checked><span id="schDay6Label">Sun</span></label>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn" id="addScheduleBtn" onclick="addScheduleEntry()">Add Entry</button>
+        <button class="btn ghost" id="cancelScheduleEditBtn" onclick="cancelScheduleEdit()" style="display:none">Cancel Edit</button>
+        <button class="btn ghost" id="saveScheduleBtn" onclick="saveSchedule()">Save Schedule</button>
+      </div>
+      <div id="scheduleList" class="schedule-list"></div>
+    </div>
+  </div>
+
+  <div id="tabGrowth" class="tab">
+    <div class="panel">
+      <h3 id="growthTitle">Growth Program</h3>
+      <div class="row">
+        <div class="field">
+          <label id="growthPlantLabel">Plant</label>
+          <select id="growthPlant"></select>
+        </div>
+        <div class="field">
+          <label id="growthFertilizerLabel">Fertilizer Type</label>
+          <select id="growthFertilizer"></select>
+        </div>
+        <div class="field">
+          <label id="growthProfileLabel">Program</label>
+          <select id="growthProfile"></select>
+        </div>
+        <div class="field">
+          <label id="growthPhaseLabel">Plant Phase</label>
+          <select id="growthPhase"></select>
+        </div>
+        <div class="field">
+          <label id="growthWaterVolumeLabel">Water Volume (L)</label>
+          <input id="growthWaterVolumeL" type="number" min="1" step="1" value="20">
+        </div>
+        <button class="btn" id="growthRecalculateBtn" onclick="calculateGrowthProgram()">Recalculate</button>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label id="growthScheduleTitle">Recommended Frequency</label>
+          <div id="growthScheduleSummary" class="schedule-empty"></div>
+        </div>
+        <div class="field">
+          <label id="growthNutrientHourLabel">Nutrient time (hour)</label>
+          <input id="growthNutrientHour" type="number" min="0" max="23" value="9">
+        </div>
+        <div class="field">
+          <label id="growthNutrientMinuteLabel">Nutrient time (minute)</label>
+          <input id="growthNutrientMinute" type="number" min="0" max="59" value="0">
+        </div>
+        <div class="field">
+          <label id="growthPhHourLabel">pH time (hour)</label>
+          <input id="growthPhHour" type="number" min="0" max="23" value="18">
+        </div>
+        <div class="field">
+          <label id="growthPhMinuteLabel">pH time (minute)</label>
+          <input id="growthPhMinute" type="number" min="0" max="59" value="0">
+        </div>
+        <div class="field">
+          <label id="growthPauseMinutesLabel">Pause between channels (min)</label>
+          <input id="growthPauseMinutes" type="number" min="1" max="180" value="10">
+        </div>
+        <button class="btn" id="growthCreateScheduleBtn" onclick="createGrowthSchedule()">Create Schedule</button>
+        <button class="btn ghost" id="growthExportBtn" onclick="exportGrowthPrograms()">Export JSON</button>
+        <button class="btn ghost" id="growthImportBtn" onclick="openGrowthImport()">Import JSON</button>
+        <input id="growthImportFile" type="file" accept=".json,application/json" style="display:none">
+      </div>
+      <div id="growthImportStatus" class="schedule-empty"></div>
+      <div id="growthResultList" class="schedule-list"></div>
+    </div>
+  </div>
+
+  <div id="tabHa" class="tab">
+    <div class="panel" id="haContentEn">
+      <h3>Home Assistant integration</h3>
+      <p class="help">This guide connects the pump firmware API to Home Assistant (<b>http://192.168.88.26:8123</b>).</p>
+      <h4>1. Define REST commands</h4>
+      <pre><code>rest_command:
+  peristaltic_flow:
+    url: "http://&lt;pump-ip&gt;/api/flow"
+    method: POST
+    content_type: "application/json"
+    payload: '{"litersPerHour": {{ lph }}, "reverse": {{ reverse | lower }}}'
+
+  peristaltic_dosing:
+    url: "http://&lt;pump-ip&gt;/api/dosing"
+    method: POST
+    content_type: "application/json"
+    payload: '{"volumeMl": {{ ml }}, "reverse": {{ reverse | lower }}}'
+
+  peristaltic_stop:
+    url: "http://&lt;pump-ip&gt;/api/stop"
+    method: POST</code></pre>
+      <p class="help">Replace <code>&lt;pump-ip&gt;</code> with the ESP32 address in your LAN.</p>
+      <h4>2. Add REST sensor for state</h4>
+      <pre><code>sensor:
+  - platform: rest
+    name: Peristaltic Pump State
+    resource: "http://&lt;pump-ip&gt;/api/state"
+    value_template: "{{ value_json.modeName }}"
+    json_attributes:
+      - running
+      - direction
+      - flowLph
+      - totalPumpedL
+      - dosingRemainingMl
+    scan_interval: 5</code></pre>
+      <h4>3. Example script actions</h4>
+      <pre><code>script:
+  pump_dose_250ml:
+    alias: Pump dose 250 ml
+    sequence:
+      - service: rest_command.peristaltic_dosing
+        data:
+          ml: 250
+          reverse: false
+
+  pump_stop:
+    alias: Pump stop
+    sequence:
+      - service: rest_command.peristaltic_stop</code></pre>
+      <h4>4. Apply config</h4>
+      <ol class="ha-steps">
+        <li>In Home Assistant open <b>Developer Tools -&gt; YAML</b>.</li>
+        <li>Reload REST entities and scripts, or restart Home Assistant.</li>
+        <li>Add controls/sensors to a dashboard card.</li>
+      </ol>
+      <h4>Notes</h4>
+      <ul class="ha-steps">
+        <li>If web auth is enabled on the pump UI, keep API access available from Home Assistant.</li>
+        <li>Recommended HA host for this setup: <code>192.168.88.26</code>.</li>
+      </ul>
+    </div>
+    <div class="panel" id="haContentRu" style="display:none">
+      <h3>Интеграция с Home Assistant</h3>
+      <p class="help">Эта инструкция подключает API прошивки насоса к Home Assistant (<b>http://192.168.88.26:8123</b>).</p>
+      <h4>1. Добавьте REST-команды</h4>
+      <pre><code>rest_command:
+  peristaltic_flow:
+    url: "http://&lt;pump-ip&gt;/api/flow"
+    method: POST
+    content_type: "application/json"
+    payload: '{"litersPerHour": {{ lph }}, "reverse": {{ reverse | lower }}}'
+
+  peristaltic_dosing:
+    url: "http://&lt;pump-ip&gt;/api/dosing"
+    method: POST
+    content_type: "application/json"
+    payload: '{"volumeMl": {{ ml }}, "reverse": {{ reverse | lower }}}'
+
+  peristaltic_stop:
+    url: "http://&lt;pump-ip&gt;/api/stop"
+    method: POST</code></pre>
+      <p class="help">Замените <code>&lt;pump-ip&gt;</code> на IP ESP32 в вашей локальной сети.</p>
+      <h4>2. Добавьте REST-сенсор состояния</h4>
+      <pre><code>sensor:
+  - platform: rest
+    name: Peristaltic Pump State
+    resource: "http://&lt;pump-ip&gt;/api/state"
+    value_template: "{{ value_json.modeName }}"
+    json_attributes:
+      - running
+      - direction
+      - flowLph
+      - totalPumpedL
+      - dosingRemainingMl
+    scan_interval: 5</code></pre>
+      <h4>3. Примеры скриптов</h4>
+      <pre><code>script:
+  pump_dose_250ml:
+    alias: Pump dose 250 ml
+    sequence:
+      - service: rest_command.peristaltic_dosing
+        data:
+          ml: 250
+          reverse: false
+
+  pump_stop:
+    alias: Pump stop
+    sequence:
+      - service: rest_command.peristaltic_stop</code></pre>
+      <h4>4. Примените конфигурацию</h4>
+      <ol class="ha-steps">
+        <li>В Home Assistant откройте <b>Developer Tools -&gt; YAML</b>.</li>
+        <li>Перезагрузите REST-сущности и скрипты или перезапустите Home Assistant.</li>
+        <li>Добавьте элементы управления/сенсоры на dashboard.</li>
+      </ol>
+      <h4>Примечания</h4>
+      <ul class="ha-steps">
+        <li>Если в UI насоса включена авторизация, обеспечьте доступ API для Home Assistant.</li>
+        <li>Рекомендуемый хост HA для этой схемы: <code>192.168.88.26</code>.</li>
+      </ul>
+    </div>
+  </div>
+
+    <div class="foot">
+      <button class="btn stop" id="resetWifiBtn" onclick="post('/api/wifi/reset')">Reset Wi-Fi (AP setup)</button>
+    </div>
+  </div>
+  <script src="/growth-schedule.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
