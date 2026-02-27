@@ -160,6 +160,14 @@ def test_live_firmware_release_list() -> None:
     assert isinstance(payload["releases"], list)
 
 
+def test_live_firmware_probe_endpoint() -> None:
+    probe_url = "https://github.com/dslimp/peristaltic-pump/releases/latest/download/firmware.bin"
+    code, payload = http_json(f"{HW_BASE}/api/firmware/probe?url={probe_url}", timeout=20.0)
+    assert code == 200
+    assert payload.get("ok") is True
+    assert int(payload.get("statusCode", 0)) == 200
+
+
 def _to_float(value: Any, fallback: float) -> float:
     try:
         return float(value)
