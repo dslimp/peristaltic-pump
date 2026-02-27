@@ -20,7 +20,7 @@
 #include "PumpController.h"
 
 namespace cfg {
-constexpr char kFirmwareVersion[] = "0.2.9-esp32";
+constexpr char kFirmwareVersion[] = "0.2.10-esp32";
 
 constexpr char kApSsid[] = "PeristalticPump-Setup";
 constexpr char kApPass[] = "pump12345";

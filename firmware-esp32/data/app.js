@@ -324,6 +324,9 @@ const growthScheduler = globalThis.GrowthSchedule || null;
 const GROWTH_SCHEMA = 'peristaltic.growth-programs';
 const GROWTH_SCHEMA_VERSION = 1;
 const GROWTH_STORAGE_KEY = 'peristaltic_growth_programs_v2';
+const DEFAULT_FIRMWARE_REPO = 'dslimp/peristaltic-pump';
+const DEFAULT_FIRMWARE_URL = 'https://github.com/dslimp/peristaltic-pump/releases/latest/download/firmware.bin';
+const DEFAULT_FILESYSTEM_URL = 'https://github.com/dslimp/peristaltic-pump/releases/latest/download/littlefs.bin';
 
 const GROWTH_PHASE_KEYS = ['seedling', 'vegetative', 'flowering', 'fruiting'];
 
@@ -583,6 +586,23 @@ function selectedFirmwareFsUrl() {
   return String(document.getElementById('fwFsUrl')?.value || '').trim();
 }
 
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(String(value || '').trim());
+}
+
+function normalizeFirmwareUrlInputs() {
+  const fwUrl = document.getElementById('fwUrl');
+  const fsUrl = document.getElementById('fwFsUrl');
+  if (fwUrl && document.activeElement !== fwUrl) {
+    const next = String(fwUrl.value || '').trim();
+    if (!isHttpUrl(next)) fwUrl.value = DEFAULT_FIRMWARE_URL;
+  }
+  if (fsUrl && document.activeElement !== fsUrl) {
+    const next = String(fsUrl.value || '').trim();
+    if (!isHttpUrl(next)) fsUrl.value = DEFAULT_FILESYSTEM_URL;
+  }
+}
+
 function renderFirmwareReleaseOptions(selectedTag = '') {
   const select = document.getElementById('fwReleaseSelect');
   if (!select) return;
@@ -627,9 +647,10 @@ async function loadFirmwareConfig() {
   const repo = document.getElementById('fwRepo');
   const asset = document.getElementById('fwAssetName');
   const fsAsset = document.getElementById('fwFsAssetName');
-  if (repo) repo.value = config.repo || '';
+  if (repo) repo.value = config.repo || DEFAULT_FIRMWARE_REPO;
   if (asset) asset.value = config.assetName || 'firmware.bin';
   if (fsAsset) fsAsset.value = config.filesystemAssetName || 'littlefs.bin';
+  normalizeFirmwareUrlInputs();
 }
 
 async function loadFirmwareReleases() {
@@ -1015,12 +1036,14 @@ function weekdaysMaskForFrequency(timesPerWeek) {
 }
 
 function calculateGrowthProgram() {
+  phRegulationEnabled = !!document.getElementById('phRegulationEnabled')?.checked;
+  const phEnabled = phRegulationEnabled;
   const profile = selectedGrowthProgram();
   if (!profile) return;
   const phase = selectedGrowthPhase(profile);
   const waterL = Math.max(1, Number(document.getElementById('growthWaterVolumeL')?.value || 0));
   const feedings = Math.max(1, Number(phase.feedingsPerWeek || 1));
-  const phAdjustments = phRegulationEnabled ? Math.max(1, Number(phase.phAdjustmentsPerWeek || 1)) : 0;
+  const phAdjustments = phEnabled ? Math.max(1, Number(phase.phAdjustmentsPerWeek || 1)) : 0;
   const phScale = waterL / 10.0;
   const items = [
     {
@@ -1045,7 +1068,7 @@ function calculateGrowthProgram() {
       unit: 'growth_feedings_week',
     },
   ];
-  if (phRegulationEnabled) {
+  if (phEnabled) {
     items.unshift(
       {
         key: 'growth_pump_ph_minus',
@@ -1087,7 +1110,7 @@ function calculateGrowthProgram() {
       ? (profile.plantNameRu || profile.plantNameEn || '')
       : (profile.plantNameEn || profile.plantNameRu || '');
     const pairLabel = (fertilizerName && plantName) ? `${fertilizerName} / ${plantName}` : growthProgramName(profile);
-    const frequencyLine = phRegulationEnabled
+    const frequencyLine = phEnabled
       ? `${feedings} ${t('growth_feedings_week')}, ${phAdjustments} ${t('growth_ph_adjustments_week')}`
       : `${feedings} ${t('growth_feedings_week')}, ${t('growth_schedule_ph_off')}`;
     summary.textContent = `${pairLabel}: ${frequencyLine}`;
@@ -1095,6 +1118,8 @@ function calculateGrowthProgram() {
 }
 
 async function createGrowthSchedule() {
+  phRegulationEnabled = !!document.getElementById('phRegulationEnabled')?.checked;
+  const phEnabled = phRegulationEnabled;
   const profile = selectedGrowthProgram();
   if (!profile) return;
   if (!growthScheduler || typeof growthScheduler.generateGrowthScheduleEntries !== 'function') {
@@ -1106,7 +1131,7 @@ async function createGrowthSchedule() {
   const phase = selectedGrowthPhase(profile);
   const waterL = Math.max(1, Number(document.getElementById('growthWaterVolumeL')?.value || 0));
   const feedings = Math.max(1, Number(phase.feedingsPerWeek || 1));
-  const phAdjustments = phRegulationEnabled ? Math.max(1, Number(phase.phAdjustmentsPerWeek || 1)) : 0;
+  const phAdjustments = phEnabled ? Math.max(1, Number(phase.phAdjustmentsPerWeek || 1)) : 0;
   const nutrientHour = document.getElementById('growthNutrientHour')?.value;
   const nutrientMinute = document.getElementById('growthNutrientMinute')?.value;
   const phHour = document.getElementById('growthPhHour')?.value;
@@ -1120,7 +1145,7 @@ async function createGrowthSchedule() {
     activeMotorCount,
     phase,
     waterL,
-    phRegulationEnabled,
+    phRegulationEnabled: phEnabled,
     nutrientHour,
     nutrientMinute,
     nutrientMask,
@@ -1638,13 +1663,14 @@ async function refreshSettings() {
       const repo = document.getElementById('fwRepo');
       const asset = document.getElementById('fwAssetName');
       const fsAsset = document.getElementById('fwFsAssetName');
-      if (repo && document.activeElement !== repo) repo.value = settings.firmwareUpdate.repo || 'dslimp/peristaltic-pump';
+      if (repo && document.activeElement !== repo) repo.value = settings.firmwareUpdate.repo || DEFAULT_FIRMWARE_REPO;
       if (asset && document.activeElement !== asset) asset.value = settings.firmwareUpdate.assetName || 'firmware.bin';
       if (fsAsset && document.activeElement !== fsAsset) fsAsset.value = settings.firmwareUpdate.filesystemAssetName || 'littlefs.bin';
     } else {
       const repo = document.getElementById('fwRepo');
-      if (repo && document.activeElement !== repo) repo.value = 'dslimp/peristaltic-pump';
+      if (repo && document.activeElement !== repo) repo.value = DEFAULT_FIRMWARE_REPO;
     }
+    normalizeFirmwareUrlInputs();
   } catch (_) {
   }
 }

@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.10] - 2026-02-27
+
+- initial import
+
 ## [0.2.9] - 2026-02-27
 
 - Fixed UTF-8 handling for schedule names and aliases to prevent broken Russian characters (`�`) after name truncation.
