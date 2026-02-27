@@ -220,7 +220,7 @@ def test_live_full_config_roundtrip_with_restore() -> None:
         "motorAliases": updated_aliases,
         "expansion": {
             "enabled": bool(original_settings.get("expansion", {}).get("enabled", False)),
-            "interface": str(original_settings.get("expansion", {}).get("interface", "i2c")),
+            "interface": str(original_settings.get("expansion", {}).get("interface", "rs485")),
             "motorCount": _to_int(original_settings.get("expansion", {}).get("motorCount"), 0),
         },
     }
@@ -248,7 +248,7 @@ def test_live_full_config_roundtrip_with_restore() -> None:
         "motorAliases": original_aliases,
         "expansion": {
             "enabled": bool(original_settings.get("expansion", {}).get("enabled", False)),
-            "interface": str(original_settings.get("expansion", {}).get("interface", "i2c")),
+            "interface": str(original_settings.get("expansion", {}).get("interface", "rs485")),
             "motorCount": _to_int(original_settings.get("expansion", {}).get("motorCount"), 0),
         },
     }

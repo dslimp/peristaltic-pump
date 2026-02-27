@@ -2,14 +2,35 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.13] - 2026-02-27
+
+- Switched expansion stack from I2C to RS-485 in central and expansion firmware.
+- Increased central board local motor support from 1 to 5 motors.
+- Kept STEP pulse generation on hardware LEDC timers per motor (STEP/DIR remains hardware-driven).
+- Updated Web UI expansion interface defaults to RS-485.
+- Updated integration simulator/tests and protocol docs for RS-485 transport.
+- Added local RS-485 protocol documentation and deprecated I2C protocol doc.
+
+## [Unreleased]
+
+- Reserved for next release.
+
+## [0.2.12] - 2026-02-27
+
+- Switched expansion stack from I2C to RS-485 in central and expansion firmware.
+- Increased central board local motor support from 1 to 5 motors.
+- Kept STEP pulse generation on hardware LEDC timers per motor (STEP/DIR remains hardware-driven).
+- Updated Web UI expansion interface defaults to RS-485.
+- Updated integration simulator/tests and protocol docs for RS-485 transport.
+- Cleaned release notes structure and removed incorrect duplicate release lines.
+
 ## [0.2.11] - 2026-02-27
 
-- release: v0.2.10
-- initial import
+- Release maintenance.
 
 ## [0.2.10] - 2026-02-27
 
-- initial import
+- Initial import.
 
 ## [0.2.9] - 2026-02-27
 
@@ -94,12 +115,6 @@ All notable changes to this project are documented in this file.
 - Updated RU UI terminology: "Поток дозировки (L/h)" -> "Дозировка (L/h)" and kept JSON term unlocalized as "JSON".
 - Updated docs and release workflows, including explicit firmware/filesystem flashing instructions and release artifact workflow fixes.
 - Extended integration tests and kept native unit tests green for updated API/motor behavior.
-
-## [Unreleased]
-
-- Growth Program: added separate selectors for plant type and fertilizer type with automatic profile composition.
-- Expanded built-in plant catalog (leafy greens, herbs, fruiting crops) and added multiple popular fertilizer lines.
-- Added source notes for fertilizer/plant preset data (`docs/GROWTH_PROGRAM_SOURCES.md`).
 
 ## [0.2.0] - 2026-02-25
 

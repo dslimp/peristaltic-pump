@@ -20,7 +20,7 @@
 #include "PumpController.h"
 
 namespace cfg {
-constexpr char kFirmwareVersion[] = "0.2.11-esp32";
+constexpr char kFirmwareVersion[] = "0.2.13-esp32";
 
 constexpr char kApSsid[] = "PeristalticPump-Setup";
 constexpr char kApPass[] = "pump12345";
@@ -29,36 +29,42 @@ constexpr char kDebugWifiSsid[] = "nh";          // temporary for debug
 constexpr char kDebugWifiPass[] = "Fx110011";    // temporary for debug
 constexpr uint16_t kDebugWifiConnectTimeoutMs = 12000;
 
+constexpr uint8_t kBaseMotors = 5;
+constexpr uint8_t kExpansionMaxMotors = 4;
+constexpr uint8_t kMaxMotors = kBaseMotors + kExpansionMaxMotors;
+
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
-constexpr uint8_t kPinStep = 4;
-constexpr uint8_t kPinDir = 5;
-constexpr uint8_t kPinEnable = 6;
+constexpr std::array<uint8_t, kBaseMotors> kPinStep = {4, 5, 6, 7, 15};
+constexpr std::array<uint8_t, kBaseMotors> kPinDir = {10, 11, 12, 13, 16};
+constexpr std::array<uint8_t, kBaseMotors> kPinEnable = {14, 17, 18, 21, 47};
+constexpr int kRs485RxPin = 44;
+constexpr int kRs485TxPin = 43;
+constexpr int kRs485DePin = 2;
 #else
-constexpr uint8_t kPinStep = 25;
-constexpr uint8_t kPinDir = 26;
-constexpr uint8_t kPinEnable = 27;
+constexpr std::array<uint8_t, kBaseMotors> kPinStep = {25, 26, 27, 14, 12};
+constexpr std::array<uint8_t, kBaseMotors> kPinDir = {33, 32, 15, 4, 13};
+constexpr std::array<uint8_t, kBaseMotors> kPinEnable = {2, 5, 18, 19, 21};
+constexpr int kRs485RxPin = 16;
+constexpr int kRs485TxPin = 17;
+constexpr int kRs485DePin = 22;
 #endif
 
-constexpr uint8_t kPinI2cSda = 8;   // YD-ESP32-23 / ESP32-S3 typical SDA
-constexpr uint8_t kPinI2cScl = 9;   // YD-ESP32-23 / ESP32-S3 typical SCL
+constexpr uint8_t kPinI2cSda = 8;   // OLED I2C
+constexpr uint8_t kPinI2cScl = 9;   // OLED I2C
 constexpr uint8_t kOledAddr = 0x3C;
 constexpr uint8_t kOledWidth = 128;
 constexpr uint8_t kOledHeight = 64;
 constexpr uint16_t kOledRefreshMs = 500;
 
-constexpr int kLedcChannel = 0;
 constexpr int kLedcResolutionBits = 8;
+constexpr uint32_t kRs485Baud = 250000;
+constexpr uint16_t kRs485FrameTimeoutMs = 120;
 constexpr int kMicroStepping = 8;
 constexpr float kStepAngleDeg = 1.8f;
 constexpr uint16_t kControlTickMs = 10;
 constexpr uint16_t kSavePeriodMs = 5000;
 constexpr uint8_t kMaxSchedules = 8;
 constexpr uint8_t kMaxScheduleNameLen = 32;
-constexpr uint8_t kBaseMotors = 1;
-constexpr uint8_t kExpansionMaxMotors = 4;
-constexpr uint8_t kMaxMotors = kBaseMotors + kExpansionMaxMotors;
-constexpr uint8_t kExpansionI2cAddrFrom = 0x20;
-constexpr uint8_t kExpansionI2cAddrTo = 0x2F;
 constexpr uint16_t kExpansionDiscoveryMs = 2000;
 constexpr uint16_t kExpansionPollMs = 300;
 constexpr uint8_t kMaxFirmwareReleases = 1;
@@ -87,7 +93,12 @@ constexpr uint8_t kStateRespLen = 29;
 WebServer server(80);
 Preferences prefs;
 WiFiManager wifiManager;
+HardwareSerial rs485Serial(2);
 std::array<pump::PumpController, cfg::kMaxMotors> controllers = {
+    pump::PumpController(pump::Config{}),
+    pump::PumpController(pump::Config{}),
+    pump::PumpController(pump::Config{}),
+    pump::PumpController(pump::Config{}),
     pump::PumpController(pump::Config{}),
     pump::PumpController(pump::Config{}),
     pump::PumpController(pump::Config{}),
@@ -101,8 +112,8 @@ uint32_t lastControlMs = 0;
 uint32_t lastSaveMs = 0;
 uint32_t lastOledMs = 0;
 bool oledReady = false;
-std::array<bool, cfg::kMaxMotors> preferredReverse = {false, false, false, false, false};
-std::array<String, cfg::kMaxMotors> motorAliases = {"Motor 0", "Motor 1", "Motor 2", "Motor 3", "Motor 4"};
+std::array<bool, cfg::kMaxMotors> preferredReverse = {};
+std::array<String, cfg::kMaxMotors> motorAliases = {};
 uint8_t selectedMotorId = 0;
 bool webAuthEnabled = false;
 String webAuthUser = "admin";
@@ -114,13 +125,23 @@ bool phRegulationEnabled = false;
 String firmwareRepo = cfg::kDefaultFirmwareRepo;
 String firmwareAssetName = cfg::kDefaultFirmwareAsset;
 String firmwareFsAssetName = cfg::kDefaultFirmwareFsAsset;
-String expansionInterface = "i2c";
+String expansionInterface = "rs485";
 bool expansionEnabled = false;
 uint8_t expansionMotorCount = 0;
 bool expansionConnected = false;
-uint8_t expansionI2cAddress = 0;
+uint8_t expansionAddress = 1;
 uint32_t lastExpansionDiscoveryMs = 0;
 uint32_t lastExpansionPollMs = 0;
+
+struct OtaUploadState {
+  bool ok = false;
+  bool started = false;
+  int error = 0;
+  String errorString;
+};
+
+OtaUploadState fsUploadState;
+OtaUploadState fwUploadState;
 
 struct DoseScheduleEntry {
   bool enabled = false;
@@ -258,6 +279,57 @@ bool probeHttpUrl(const String& url, int* statusCode, int* contentLength, String
   if (!ok && errorMessage) *errorMessage = String("Unexpected HTTP Code: ") + String(code);
   http.end();
   return ok;
+}
+
+void resetOtaUploadState(OtaUploadState* state) {
+  if (!state) return;
+  state->ok = false;
+  state->started = false;
+  state->error = 0;
+  state->errorString.clear();
+}
+
+void handleOtaUploadChunk(int command, OtaUploadState* state) {
+  if (!state) return;
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    resetOtaUploadState(state);
+    state->started = true;
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, command)) {
+      state->error = Update.getError();
+      state->errorString = String(Update.errorString());
+    }
+    return;
+  }
+  if (!state->started || state->error != 0) return;
+  if (upload.status == UPLOAD_FILE_WRITE) {
+    const size_t written = Update.write(upload.buf, upload.currentSize);
+    if (written != upload.currentSize) {
+      state->error = Update.getError();
+      state->errorString = String(Update.errorString());
+      Update.abort();
+    }
+    return;
+  }
+  if (upload.status == UPLOAD_FILE_END) {
+    if (!Update.end(true)) {
+      state->error = Update.getError();
+      state->errorString = String(Update.errorString());
+      return;
+    }
+    if (!Update.isFinished()) {
+      state->error = -105;
+      state->errorString = "update not finished";
+      return;
+    }
+    state->ok = true;
+    return;
+  }
+  if (upload.status == UPLOAD_FILE_ABORTED) {
+    state->error = -106;
+    state->errorString = "upload aborted";
+    Update.abort();
+  }
 }
 
 bool isValidRepoSlug(const String& value) {
@@ -524,20 +596,42 @@ uint8_t frameCrc(const uint8_t* data, size_t lenWithoutCrc) {
   return crc;
 }
 
-bool i2cExchange(uint8_t addr, const uint8_t* tx, size_t txLen, uint8_t* rx, size_t rxLen) {
-  Wire.beginTransmission(addr);
-  for (size_t i = 0; i < txLen; ++i) {
-    Wire.write(tx[i]);
-  }
-  const uint8_t code = Wire.endTransmission(rxLen > 0 ? false : true);
-  if (code != 0) return false;
+bool rs485Exchange(const uint8_t* tx, size_t txLen, uint8_t* rx, size_t rxLen) {
+  if (expansionInterface != "rs485") return false;
+  while (rs485Serial.available() > 0) rs485Serial.read();
+
+  digitalWrite(cfg::kRs485DePin, HIGH);
+  delayMicroseconds(120);
+  rs485Serial.write(static_cast<uint8_t>(txLen));
+  rs485Serial.write(tx, txLen);
+  rs485Serial.flush();
+  delayMicroseconds(120);
+  digitalWrite(cfg::kRs485DePin, LOW);
+
   if (rxLen == 0) return true;
-  const int got = Wire.requestFrom(static_cast<int>(addr), static_cast<int>(rxLen), static_cast<int>(true));
-  if (got != static_cast<int>(rxLen)) return false;
-  for (size_t i = 0; i < rxLen; ++i) {
-    rx[i] = Wire.read();
+  const uint32_t deadline = millis() + cfg::kRs485FrameTimeoutMs;
+  while (millis() < deadline && rs485Serial.available() <= 0) {
+    delay(1);
   }
-  return true;
+  if (rs485Serial.available() <= 0) return false;
+  const int announcedLen = rs485Serial.read();
+  if (announcedLen <= 0 || static_cast<size_t>(announcedLen) != rxLen) return false;
+  size_t got = 0;
+  while (got < rxLen && millis() < deadline) {
+    while (rs485Serial.available() > 0 && got < rxLen) {
+      rx[got++] = static_cast<uint8_t>(rs485Serial.read());
+    }
+    if (got < rxLen) delay(1);
+  }
+  return got == rxLen;
+}
+
+bool isLocalMotor(uint8_t motorId) {
+  return motorId < cfg::kBaseMotors;
+}
+
+uint8_t remoteMotorIndex(uint8_t motorId) {
+  return static_cast<uint8_t>(motorId - cfg::kBaseMotors);
 }
 
 bool expansionReadState(uint8_t remoteMotorIdx) {
@@ -545,10 +639,10 @@ bool expansionReadState(uint8_t remoteMotorIdx) {
   uint8_t tx[3] = {exproto::kCmdGetState, remoteMotorIdx, 0};
   tx[2] = frameCrc(tx, 2);
   uint8_t rx[exproto::kStateRespLen] = {0};
-  if (!i2cExchange(expansionI2cAddress, tx, sizeof(tx), rx, sizeof(rx))) return false;
+  if (!rs485Exchange(tx, sizeof(tx), rx, sizeof(rx))) return false;
   if (rx[28] != frameCrc(rx, 28)) return false;
 
-  auto& ctrl = controllerById(static_cast<uint8_t>(remoteMotorIdx + 1));
+  auto& ctrl = controllerById(static_cast<uint8_t>(cfg::kBaseMotors + remoteMotorIdx));
   auto& st = ctrl.mutableState();
   auto rd16 = [&](int pos) -> int16_t {
     return static_cast<int16_t>(static_cast<uint16_t>(rx[pos]) | (static_cast<uint16_t>(rx[pos + 1]) << 8));
@@ -585,7 +679,7 @@ bool expansionCommandNoResp(uint8_t cmd, const uint8_t* payload, size_t payloadL
   frame[0] = cmd;
   for (size_t i = 0; i < payloadLen; ++i) frame[1 + i] = payload[i];
   frame[1 + payloadLen] = frameCrc(frame, 1 + payloadLen);
-  return i2cExchange(expansionI2cAddress, frame, payloadLen + 2, nullptr, 0);
+  return rs485Exchange(frame, payloadLen + 2, nullptr, 0);
 }
 
 bool expansionSetFlow(uint8_t remoteMotorIdx, float lph, bool reverse) {
@@ -635,37 +729,32 @@ bool expansionSetSettings(uint8_t remoteMotorIdx, float mlCw, float mlCcw, float
   return expansionCommandNoResp(exproto::kCmdSetSettings, p, sizeof(p));
 }
 
-bool discoverExpansionI2c() {
-  if (!expansionEnabled || expansionInterface != "i2c") return false;
+bool discoverExpansionRs485() {
+  if (!expansionEnabled || expansionInterface != "rs485") return false;
   uint8_t tx[2] = {exproto::kCmdHello, 0};
   tx[1] = frameCrc(tx, 1);
   uint8_t rx[exproto::kHelloRespLen] = {0};
-
-  for (uint8_t addr = cfg::kExpansionI2cAddrFrom; addr <= cfg::kExpansionI2cAddrTo; ++addr) {
-    if (!i2cExchange(addr, tx, sizeof(tx), rx, sizeof(rx))) continue;
-    if (rx[5] != frameCrc(rx, 5)) continue;
-    if (rx[0] != exproto::kMagicA || rx[1] != exproto::kMagicB || rx[2] != exproto::kProtoVer) continue;
-    const uint8_t discovered = rx[3] > cfg::kExpansionMaxMotors ? cfg::kExpansionMaxMotors : rx[3];
-    if (discovered == 0) continue;
-    expansionI2cAddress = addr;
-    expansionConnected = true;
-    expansionMotorCount = discovered;
-    return true;
-  }
-  expansionConnected = false;
-  return false;
+  if (!rs485Exchange(tx, sizeof(tx), rx, sizeof(rx))) return false;
+  if (rx[5] != frameCrc(rx, 5)) return false;
+  if (rx[0] != exproto::kMagicA || rx[1] != exproto::kMagicB || rx[2] != exproto::kProtoVer) return false;
+  const uint8_t discovered = rx[3] > cfg::kExpansionMaxMotors ? cfg::kExpansionMaxMotors : rx[3];
+  if (discovered == 0) return false;
+  expansionAddress = 1;
+  expansionConnected = true;
+  expansionMotorCount = discovered;
+  return true;
 }
 
 void refreshExpansionState() {
-  if (!expansionEnabled || expansionInterface != "i2c") {
+  if (!expansionEnabled || expansionInterface != "rs485") {
     expansionConnected = false;
-    if (selectedMotorId > 0) selectedMotorId = 0;
+    if (selectedMotorId >= cfg::kBaseMotors) selectedMotorId = 0;
     return;
   }
   const uint32_t now = millis();
   if (!expansionConnected && (now - lastExpansionDiscoveryMs >= cfg::kExpansionDiscoveryMs)) {
     lastExpansionDiscoveryMs = now;
-    discoverExpansionI2c();
+    discoverExpansionRs485();
   }
   if (!expansionConnected) return;
   if (now - lastExpansionPollMs < cfg::kExpansionPollMs) return;
@@ -715,31 +804,34 @@ uint8_t readMotorIdFromRequest(bool* ok = nullptr) {
   return valid ? static_cast<uint8_t>(motorId) : 0;
 }
 
-void setDriverFrequencyHz(float freqHz) {
+void setDriverFrequencyHz(uint8_t motorId, float freqHz) {
+  if (motorId >= cfg::kBaseMotors) return;
+  const uint8_t channel = motorId;
   if (freqHz < 1.0f) {
-    ledcWriteTone(cfg::kLedcChannel, 0);
-    digitalWrite(cfg::kPinStep, LOW);
-    digitalWrite(cfg::kPinEnable, HIGH);
+    ledcWriteTone(channel, 0);
+    digitalWrite(cfg::kPinStep[motorId], LOW);
+    digitalWrite(cfg::kPinEnable[motorId], HIGH);
     return;
   }
 
-  digitalWrite(cfg::kPinEnable, LOW);
-  ledcWriteTone(cfg::kLedcChannel, freqHz);
+  digitalWrite(cfg::kPinEnable[motorId], LOW);
+  ledcWriteTone(channel, freqHz);
 }
 
 float speedToFrequency(float speed) {
   return fabsf(speed) * kStepsPerRevolution / 60.0f;
 }
 
-void applyMotorSpeed(float speed) {
-  const auto& conf = controllerById(0).config();
+void applyMotorSpeed(uint8_t motorId, float speed) {
+  if (motorId >= cfg::kBaseMotors) return;
+  const auto& conf = controllerById(motorId).config();
   if (fabsf(speed) < conf.minSpeed) {
-    setDriverFrequencyHz(0);
+    setDriverFrequencyHz(motorId, 0);
     return;
   }
 
-  digitalWrite(cfg::kPinDir, speed >= 0 ? LOW : HIGH);
-  setDriverFrequencyHz(speedToFrequency(speed));
+  digitalWrite(cfg::kPinDir[motorId], speed >= 0 ? LOW : HIGH);
+  setDriverFrequencyHz(motorId, speedToFrequency(speed));
 }
 
 void writeMotorState(JsonObject out, const pump::PumpController& ctrl, uint8_t motorId) {
@@ -855,9 +947,9 @@ void loadPersistentState() {
   expansionEnabled = prefs.getBool("exp_en", false);
   expansionMotorCount = prefs.getUChar("exp_count", 0);
   if (expansionMotorCount > cfg::kExpansionMaxMotors) expansionMotorCount = cfg::kExpansionMaxMotors;
-  expansionInterface = prefs.getString("exp_if", "i2c");
-  if (expansionInterface != "i2c" && expansionInterface != "rs485" && expansionInterface != "uart") {
-    expansionInterface = "i2c";
+  expansionInterface = prefs.getString("exp_if", "rs485");
+  if (expansionInterface != "rs485" && expansionInterface != "uart") {
+    expansionInterface = "rs485";
   }
   selectedMotorId = prefs.getUChar("sel_motor", 0);
   if (!isValidMotorId(selectedMotorId)) selectedMotorId = 0;
@@ -918,7 +1010,7 @@ void writeJsonState(DynamicJsonDocument& doc, uint8_t motorId) {
   expansion["interface"] = expansionInterface;
   expansion["motorCount"] = expansionMotorCount;
   expansion["connected"] = expansionConnected;
-  expansion["address"] = expansionConnected ? expansionI2cAddress : 0;
+  expansion["address"] = expansionConnected ? expansionAddress : 0;
   doc["mode"] = static_cast<uint8_t>(st.mode);
   doc["modeName"] = modeName;
   doc["running"] = st.running;
@@ -987,11 +1079,11 @@ bool startDosingNow(uint8_t motorId, uint16_t volumeMl, bool reverse) {
   char key[24];
   snprintf(key, sizeof(key), "pref_rev_%u", motorId);
   prefs.putBool(key, preferredReverse[motorId]);
-  if (motorId == 0) {
+  if (isLocalMotor(motorId)) {
     ctrl.startDosing(reverse ? -static_cast<int32_t>(volumeMl) : static_cast<int32_t>(volumeMl));
     return true;
   }
-  const uint8_t remoteIdx = motorId - 1;
+  const uint8_t remoteIdx = remoteMotorIndex(motorId);
   if (!expansionStartDosing(remoteIdx, volumeMl, reverse)) return false;
   delay(2);
   return expansionReadState(remoteIdx);
@@ -1115,9 +1207,9 @@ void setupApi() {
       sendJson(400, err);
       return;
     }
-    if (motorId == 0) {
+    if (isLocalMotor(motorId)) {
       controllerById(motorId).start();
-    } else if (!expansionStart(motorId - 1) || !expansionReadState(motorId - 1)) {
+    } else if (!expansionStart(remoteMotorIndex(motorId)) || !expansionReadState(remoteMotorIndex(motorId))) {
       DynamicJsonDocument err(128);
       err["error"] = "expansion motor start failed";
       sendJson(503, err);
@@ -1140,9 +1232,9 @@ void setupApi() {
       sendJson(400, err);
       return;
     }
-    if (motorId == 0) {
+    if (isLocalMotor(motorId)) {
       controllerById(motorId).stop(false);
-    } else if (!expansionStop(motorId - 1) || !expansionReadState(motorId - 1)) {
+    } else if (!expansionStop(remoteMotorIndex(motorId)) || !expansionReadState(remoteMotorIndex(motorId))) {
       DynamicJsonDocument err(128);
       err["error"] = "expansion motor stop failed";
       sendJson(503, err);
@@ -1251,12 +1343,12 @@ void setupApi() {
     char key[24];
     snprintf(key, sizeof(key), "pref_rev_%u", motorId);
     prefs.putBool(key, preferredReverse[motorId]);
-    if (motorId == 0) {
+    if (isLocalMotor(motorId)) {
       const auto& st = controllerById(motorId).state();
       const float mlPerRev = useReverse ? st.mlPerRevCcw : st.mlPerRevCw;
       const float speed = (lph * 1000.0f / 60.0f) / mlPerRev * (useReverse ? -1.0f : 1.0f);
       controllerById(motorId).setSpeed(speed, pump::Mode::FLOW);
-    } else if (!expansionSetFlow(motorId - 1, lph, useReverse) || !expansionReadState(motorId - 1)) {
+    } else if (!expansionSetFlow(remoteMotorIndex(motorId), lph, useReverse) || !expansionReadState(remoteMotorIndex(motorId))) {
       DynamicJsonDocument err(256);
       err["error"] = "expansion flow command failed";
       sendJson(503, err);
@@ -1298,9 +1390,9 @@ void setupApi() {
     char key[24];
     snprintf(key, sizeof(key), "pref_rev_%u", motorId);
     prefs.putBool(key, preferredReverse[motorId]);
-    if (motorId == 0) {
+    if (isLocalMotor(motorId)) {
       controllerById(motorId).startDosing(reverse ? -volume : volume);
-    } else if (!expansionStartDosing(motorId - 1, static_cast<uint16_t>(volume), reverse) || !expansionReadState(motorId - 1)) {
+    } else if (!expansionStartDosing(remoteMotorIndex(motorId), static_cast<uint16_t>(volume), reverse) || !expansionReadState(remoteMotorIndex(motorId))) {
       DynamicJsonDocument err(256);
       err["error"] = "expansion dosing command failed";
       sendJson(503, err);
@@ -1347,7 +1439,7 @@ void setupApi() {
     expansion["interface"] = expansionInterface;
     expansion["motorCount"] = expansionMotorCount;
     expansion["connected"] = expansionConnected;
-    expansion["address"] = expansionConnected ? expansionI2cAddress : 0;
+    expansion["address"] = expansionConnected ? expansionAddress : 0;
     sendJson(200, doc);
   });
 
@@ -1437,30 +1529,30 @@ void setupApi() {
       }
       if (exp["interface"].is<const char*>()) {
         const String iface = exp["interface"].as<String>();
-        if (iface == "i2c" || iface == "rs485" || iface == "uart") {
+        if (iface == "rs485" || iface == "uart") {
           expansionInterface = iface;
         }
       }
       if (!isValidMotorId(selectedMotorId)) selectedMotorId = 0;
       if (!expansionEnabled) {
         expansionConnected = false;
-      } else if (expansionInterface == "i2c") {
-        discoverExpansionI2c();
+      } else if (expansionInterface == "rs485") {
+        discoverExpansionRs485();
       }
     }
-    if (motorId == 0) {
+    if (isLocalMotor(motorId)) {
       const float mlPerRevForMax = cw > 0.0f ? cw : st.mlPerRevCw;
       ctrl.setMaxSpeed((maxFlowLph * 1000.0f / 60.0f) / mlPerRevForMax);
       ctrl.setMlPerRev(cw, ccw);
       ctrl.setDosingSpeed(dosingSpeed);
     } else {
-      if (!expansionSetSettings(motorId - 1, cw, ccw, dosingFlowLph > 0.0f ? dosingFlowLph : fabsf(dosingSpeed * cw * 0.06f), maxFlowLph)) {
+      if (!expansionSetSettings(remoteMotorIndex(motorId), cw, ccw, dosingFlowLph > 0.0f ? dosingFlowLph : fabsf(dosingSpeed * cw * 0.06f), maxFlowLph)) {
         DynamicJsonDocument err(128);
         err["error"] = "expansion settings update failed";
         sendJson(503, err);
         return;
       }
-      if (!expansionReadState(motorId - 1)) {
+      if (!expansionReadState(remoteMotorIndex(motorId))) {
         DynamicJsonDocument err(128);
         err["error"] = "expansion state refresh failed";
         sendJson(503, err);
@@ -1552,6 +1644,58 @@ void setupApi() {
     doc["filesystemAssetName"] = firmwareFsAssetName;
     doc["currentVersion"] = cfg::kFirmwareVersion;
     sendJson(200, doc);
+  });
+
+  server.on("/api/firmware/upload/filesystem", HTTP_POST, []() {
+    if (!ensureAuthenticated()) return;
+    if (!fsUploadState.started) {
+      DynamicJsonDocument err(192);
+      err["error"] = "upload not started";
+      sendJson(400, err);
+      return;
+    }
+    if (!fsUploadState.ok) {
+      DynamicJsonDocument err(256);
+      err["error"] = "filesystem upload failed";
+      err["updateError"] = fsUploadState.error;
+      if (fsUploadState.errorString.length() > 0) err["updateErrorString"] = fsUploadState.errorString;
+      sendJson(500, err);
+      return;
+    }
+    DynamicJsonDocument ok(192);
+    ok["ok"] = true;
+    ok["message"] = "filesystem uploaded";
+    sendJson(200, ok);
+  }, []() {
+    if (!ensureAuthenticated()) return;
+    handleOtaUploadChunk(U_SPIFFS, &fsUploadState);
+  });
+
+  server.on("/api/firmware/upload/firmware", HTTP_POST, []() {
+    if (!ensureAuthenticated()) return;
+    if (!fwUploadState.started) {
+      DynamicJsonDocument err(192);
+      err["error"] = "upload not started";
+      sendJson(400, err);
+      return;
+    }
+    if (!fwUploadState.ok) {
+      DynamicJsonDocument err(256);
+      err["error"] = "firmware upload failed";
+      err["updateError"] = fwUploadState.error;
+      if (fwUploadState.errorString.length() > 0) err["updateErrorString"] = fwUploadState.errorString;
+      sendJson(500, err);
+      return;
+    }
+    DynamicJsonDocument ok(256);
+    ok["ok"] = true;
+    ok["message"] = "firmware uploaded, restarting";
+    sendJson(200, ok);
+    delay(500);
+    ESP.restart();
+  }, []() {
+    if (!ensureAuthenticated()) return;
+    handleOtaUploadChunk(U_FLASH, &fwUploadState);
   });
 
   server.on("/api/firmware/releases", HTTP_GET, []() {
@@ -1865,9 +2009,9 @@ void setupApi() {
     const auto& st = controllerById(motorId).state();
     const float mlPerRev = (dir == "ccw") ? st.mlPerRevCcw : st.mlPerRevCw;
     const int volumeMl = static_cast<int>(roundf(mlPerRev * revs)) * ((dir == "ccw") ? -1 : 1);
-    if (motorId == 0) {
+    if (isLocalMotor(motorId)) {
       controllerById(motorId).startDosing(volumeMl);
-    } else if (!expansionStartDosing(motorId - 1, static_cast<uint16_t>(abs(volumeMl)), dir == "ccw") || !expansionReadState(motorId - 1)) {
+    } else if (!expansionStartDosing(remoteMotorIndex(motorId), static_cast<uint16_t>(abs(volumeMl)), dir == "ccw") || !expansionReadState(remoteMotorIndex(motorId))) {
       DynamicJsonDocument err(256);
       err["error"] = "expansion calibration run failed";
       sendJson(503, err);
@@ -1908,7 +2052,7 @@ void setupApi() {
     auto st = controllerById(motorId).state();
     const float calibrated = measuredMl / revs;
     const String dir = in["direction"].as<String>();
-    if (motorId == 0) {
+    if (isLocalMotor(motorId)) {
       if (dir == "ccw") {
         controllerById(motorId).setMlPerRev(st.mlPerRevCw, calibrated);
       } else {
@@ -1919,7 +2063,7 @@ void setupApi() {
       const float newCcw = (dir == "ccw") ? calibrated : st.mlPerRevCcw;
       const float dosingFlowLph = fabsf(st.dosingSpeed * newCw * 0.06f);
       const float maxFlowLph = controllerById(motorId).config().maxSpeed * newCw * 0.06f;
-      if (!expansionSetSettings(motorId - 1, newCw, newCcw, dosingFlowLph, maxFlowLph) || !expansionReadState(motorId - 1)) {
+      if (!expansionSetSettings(remoteMotorIndex(motorId), newCw, newCcw, dosingFlowLph, maxFlowLph) || !expansionReadState(remoteMotorIndex(motorId))) {
         DynamicJsonDocument err(256);
         err["error"] = "expansion calibration apply failed";
         sendJson(503, err);
@@ -2058,17 +2202,21 @@ void setup() {
     Serial.println("LittleFS mount failed");
   }
 
-  pinMode(cfg::kPinStep, OUTPUT);
-  pinMode(cfg::kPinDir, OUTPUT);
-  pinMode(cfg::kPinEnable, OUTPUT);
-  digitalWrite(cfg::kPinEnable, HIGH);
-
-  ledcSetup(cfg::kLedcChannel, 1, cfg::kLedcResolutionBits);
-  ledcAttachPin(cfg::kPinStep, cfg::kLedcChannel);
+  for (uint8_t motor = 0; motor < cfg::kBaseMotors; ++motor) {
+    pinMode(cfg::kPinStep[motor], OUTPUT);
+    pinMode(cfg::kPinDir[motor], OUTPUT);
+    pinMode(cfg::kPinEnable[motor], OUTPUT);
+    digitalWrite(cfg::kPinEnable[motor], HIGH);
+    ledcSetup(motor, 1, cfg::kLedcResolutionBits);
+    ledcAttachPin(cfg::kPinStep[motor], motor);
+  }
 
   Wire.begin(cfg::kPinI2cSda, cfg::kPinI2cScl);
-  if (expansionEnabled && expansionInterface == "i2c") {
-    discoverExpansionI2c();
+  pinMode(cfg::kRs485DePin, OUTPUT);
+  digitalWrite(cfg::kRs485DePin, LOW);
+  rs485Serial.begin(cfg::kRs485Baud, SERIAL_8N1, cfg::kRs485RxPin, cfg::kRs485TxPin);
+  if (expansionEnabled && expansionInterface == "rs485") {
+    discoverExpansionRs485();
   }
   oledReady = oled.begin(SSD1306_SWITCHCAPVCC, cfg::kOledAddr);
   if (oledReady) {
@@ -2106,9 +2254,11 @@ void loop() {
 
   if (now - lastControlMs >= cfg::kControlTickMs) {
     const uint32_t delta = now - lastControlMs;
-    controllerById(0).tick(delta);
     lastControlMs = now;
-    applyMotorSpeed(controllerById(0).state().currentSpeed);
+    for (uint8_t motor = 0; motor < cfg::kBaseMotors; ++motor) {
+      controllerById(motor).tick(delta);
+      applyMotorSpeed(motor, controllerById(motor).state().currentSpeed);
+    }
   }
 
   if (now - lastSaveMs >= cfg::kSavePeriodMs) {

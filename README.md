@@ -14,7 +14,7 @@ ESP32-S3 firmware for a DIY Nema-based peristaltic pump.
 - Growth Program builder (plant + fertilizer type -> dosing profile)
 - Home Assistant integration tab in Web UI
 - HTTP JSON API for external control
-- Modular expansion over I2C (autodiscovery, up to 4 extra motors)
+- Modular expansion over RS-485 (autodiscovery, up to 4 extra motors)
 
 ## API endpoints
 
@@ -55,7 +55,7 @@ pio run -e esp32s3 -t upload --upload-port /dev/cu.wchusbserialXXXX
 pio device monitor -p /dev/cu.wchusbserialXXXX -b 115200
 ```
 
-Expansion board firmware (I2C slave):
+Expansion board firmware (RS-485):
 
 ```bash
 cd firmware-esp32
@@ -64,7 +64,7 @@ pio device monitor -p /dev/cu.wchusbserialYYYY -b 115200
 ```
 
 Protocol details:
-- `docs/EXPANSION_I2C_PROTOCOL.md`
+- `docs/EXPANSION_RS485_PROTOCOL.md`
 
 ## Web UI files
 

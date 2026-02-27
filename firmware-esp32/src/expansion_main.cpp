@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <Wire.h>
+#include <HardwareSerial.h>
 
 #include <array>
 #include <cmath>
@@ -8,22 +8,27 @@
 
 namespace cfg {
 constexpr uint8_t kMotorCount = 4;
-constexpr uint8_t kI2cAddress = 0x2A;
-constexpr uint8_t kI2cSda = 8;
-constexpr uint8_t kI2cScl = 9;
 constexpr uint16_t kControlTickMs = 10;
 constexpr int kMicroStepping = 8;
 constexpr float kStepAngleDeg = 1.8f;
 constexpr int kLedcResolutionBits = 8;
+constexpr uint32_t kRs485Baud = 250000;
+constexpr uint16_t kFrameTimeoutMs = 120;
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 constexpr std::array<uint8_t, kMotorCount> kPinStep = {4, 5, 6, 7};
 constexpr std::array<uint8_t, kMotorCount> kPinDir = {10, 11, 12, 13};
 constexpr std::array<uint8_t, kMotorCount> kPinEnable = {14, 15, 16, 17};
+constexpr int kRs485RxPin = 44;
+constexpr int kRs485TxPin = 43;
+constexpr int kRs485DePin = 2;
 #else
 constexpr std::array<uint8_t, kMotorCount> kPinStep = {25, 26, 27, 14};
 constexpr std::array<uint8_t, kMotorCount> kPinDir = {33, 32, 15, 4};
 constexpr std::array<uint8_t, kMotorCount> kPinEnable = {13, 12, 2, 5};
+constexpr int kRs485RxPin = 16;
+constexpr int kRs485TxPin = 17;
+constexpr int kRs485DePin = 22;
 #endif
 }  // namespace cfg
 
@@ -40,6 +45,7 @@ constexpr uint8_t kCmdStart = 0x23;
 constexpr uint8_t kCmdSetSettings = 0x24;
 }  // namespace exproto
 
+HardwareSerial rs485Serial(2);
 std::array<pump::PumpController, cfg::kMotorCount> controllers = {
     pump::PumpController(pump::Config{}),
     pump::PumpController(pump::Config{}),
@@ -52,6 +58,11 @@ const float kStepsPerRevolution = (360.0f / cfg::kStepAngleDeg) * cfg::kMicroSte
 
 uint8_t txBuffer[40] = {0};
 size_t txLen = 0;
+
+uint8_t rxFrame[40] = {0};
+size_t rxTargetLen = 0;
+size_t rxPos = 0;
+uint32_t rxDeadlineMs = 0;
 
 uint8_t frameCrc(const uint8_t* data, size_t lenWithoutCrc) {
   uint8_t crc = 0;
@@ -191,19 +202,46 @@ void handleFrame(const uint8_t* frame, size_t len) {
   }
 }
 
-void onI2cReceive(int len) {
-  if (len <= 0 || len > 32) return;
-  uint8_t buf[32] = {0};
-  int i = 0;
-  while (Wire.available() && i < len) {
-    buf[i++] = Wire.read();
-  }
-  handleFrame(buf, static_cast<size_t>(i));
+void sendResponseIfAny() {
+  if (txLen == 0) return;
+  digitalWrite(cfg::kRs485DePin, HIGH);
+  delayMicroseconds(120);
+  rs485Serial.write(static_cast<uint8_t>(txLen));
+  rs485Serial.write(txBuffer, txLen);
+  rs485Serial.flush();
+  delayMicroseconds(120);
+  digitalWrite(cfg::kRs485DePin, LOW);
+  txLen = 0;
 }
 
-void onI2cRequest() {
-  if (txLen > 0) {
-    Wire.write(txBuffer, txLen);
+void processRs485Rx() {
+  while (rs485Serial.available() > 0) {
+    const int byteValue = rs485Serial.read();
+    if (byteValue < 0) return;
+    const uint8_t b = static_cast<uint8_t>(byteValue);
+
+    if (rxTargetLen == 0) {
+      rxTargetLen = b;
+      rxPos = 0;
+      rxDeadlineMs = millis() + cfg::kFrameTimeoutMs;
+      if (rxTargetLen == 0 || rxTargetLen > sizeof(rxFrame)) {
+        rxTargetLen = 0;
+      }
+      continue;
+    }
+    rxFrame[rxPos++] = b;
+    if (rxPos >= rxTargetLen) {
+      handleFrame(rxFrame, rxTargetLen);
+      rxTargetLen = 0;
+      rxPos = 0;
+      sendResponseIfAny();
+      continue;
+    }
+  }
+
+  if (rxTargetLen > 0 && millis() > rxDeadlineMs) {
+    rxTargetLen = 0;
+    rxPos = 0;
   }
 }
 
@@ -219,13 +257,15 @@ void setup() {
     ledcAttachPin(cfg::kPinStep[i], i);
   }
 
-  Wire.begin(cfg::kI2cAddress, cfg::kI2cSda, cfg::kI2cScl, 400000);
-  Wire.onReceive(onI2cReceive);
-  Wire.onRequest(onI2cRequest);
+  pinMode(cfg::kRs485DePin, OUTPUT);
+  digitalWrite(cfg::kRs485DePin, LOW);
+  rs485Serial.begin(cfg::kRs485Baud, SERIAL_8N1, cfg::kRs485RxPin, cfg::kRs485TxPin);
   lastControlMs = millis();
 }
 
 void loop() {
+  processRs485Rx();
+
   const uint32_t now = millis();
   if (now - lastControlMs < cfg::kControlTickMs) return;
   const uint32_t delta = now - lastControlMs;
