@@ -1,0 +1,55 @@
+name: Master CI
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio pytest
+
+      - name: Build firmware binary
+        working-directory: firmware-esp32
+        run: pio run -e esp32s3
+
+      - name: Build filesystem image
+        working-directory: firmware-esp32
+        run: pio run -e esp32s3 -t buildfs
+
+      - name: Run unit tests
+        working-directory: firmware-esp32
+        run: pio test -e native
+
+      - name: Run integration tests
+        working-directory: firmware-esp32/integration
+        run: pytest -q
+
+      - name: Prepare build artifact bundle
+        run: |
+          mkdir -p build-bundle
+          cp firmware-esp32/.pio/build/esp32s3/firmware.bin build-bundle/
+          cp firmware-esp32/.pio/build/esp32s3/littlefs.bin build-bundle/
+          cp firmware-esp32/.pio/build/esp32s3/bootloader.bin build-bundle/
+          cp firmware-esp32/.pio/build/esp32s3/partitions.bin build-bundle/
+
+      - name: Upload firmware artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32s3-build-bundle
+          path: build-bundle/
+          if-no-files-found: error

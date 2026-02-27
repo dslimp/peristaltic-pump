@@ -1,0 +1,18 @@
+# macOS / editor
+.DS_Store
+*.swp
+
+# Local agent config (keep local, do not commit)
+peristaltic-local.toml
+
+# Python
+__pycache__/
+*.pyc
+
+# PlatformIO / firmware build
+firmware-esp32/.pio/
+firmware-esp32/.venv/
+firmware-esp32/integration/__pycache__/
+
+# Local helper envs
+.venv-pio/
