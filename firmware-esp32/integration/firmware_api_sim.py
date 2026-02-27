@@ -326,6 +326,25 @@ class FirmwareApiServer:
                     )
                     return
 
+                if path == "/api/firmware/probe":
+                    url = str(query.get("url", [""])[0]).strip()
+                    if not url:
+                        self._json_response(400, {"error": "url query arg is required"})
+                        return
+                    if not (url.startswith("http://") or url.startswith("https://")):
+                        self._json_response(400, {"error": "url must be valid http(s) url"})
+                        return
+                    self._json_response(
+                        200,
+                        {
+                            "ok": True,
+                            "url": url,
+                            "statusCode": 200,
+                            "contentLength": 1024,
+                        },
+                    )
+                    return
+
                 if path == "/api/firmware/releases":
                     self._json_response(
                         200,

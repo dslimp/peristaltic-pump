@@ -20,7 +20,7 @@
 #include "PumpController.h"
 
 namespace cfg {
-constexpr char kFirmwareVersion[] = "0.2.10-esp32";
+constexpr char kFirmwareVersion[] = "0.2.11-esp32";
 
 constexpr char kApSsid[] = "PeristalticPump-Setup";
 constexpr char kApPass[] = "pump12345";
@@ -222,6 +222,42 @@ bool performHttpOta(const String& url, int command, int* updateError, String* up
   }
   http.end();
   return true;
+}
+
+bool probeHttpUrl(const String& url, int* statusCode, int* contentLength, String* errorMessage) {
+  if (statusCode) *statusCode = 0;
+  if (contentLength) *contentLength = -1;
+  if (errorMessage) errorMessage->clear();
+  const bool isHttps = url.startsWith("https://");
+  const bool isHttp = url.startsWith("http://");
+  if (!isHttps && !isHttp) {
+    if (errorMessage) *errorMessage = "unsupported url scheme";
+    return false;
+  }
+
+  WiFiClient plainClient;
+  WiFiClientSecure secureClient;
+  if (isHttps) secureClient.setInsecure();
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setTimeout(10000);
+  const bool beginOk = isHttps ? http.begin(secureClient, url) : http.begin(plainClient, url);
+  if (!beginOk) {
+    if (errorMessage) *errorMessage = "http begin failed";
+    return false;
+  }
+  const int code = http.GET();
+  if (statusCode) *statusCode = code;
+  if (code <= 0) {
+    if (errorMessage) *errorMessage = String("Wrong HTTP Code: ") + String(code);
+    http.end();
+    return false;
+  }
+  if (contentLength) *contentLength = http.getSize();
+  const bool ok = code == HTTP_CODE_OK;
+  if (!ok && errorMessage) *errorMessage = String("Unexpected HTTP Code: ") + String(code);
+  http.end();
+  return ok;
 }
 
 bool isValidRepoSlug(const String& value) {
@@ -1446,6 +1482,34 @@ void setupApi() {
     doc["filesystemAssetName"] = firmwareFsAssetName;
     doc["currentVersion"] = cfg::kFirmwareVersion;
     sendJson(200, doc);
+  });
+
+  server.on("/api/firmware/probe", HTTP_GET, []() {
+    if (!ensureAuthenticated()) return;
+    if (!server.hasArg("url")) {
+      DynamicJsonDocument err(192);
+      err["error"] = "url query arg is required";
+      sendJson(400, err);
+      return;
+    }
+    const String url = server.arg("url");
+    if (!isValidHttpUrl(url)) {
+      DynamicJsonDocument err(224);
+      err["error"] = "url must be valid http(s) url";
+      sendJson(400, err);
+      return;
+    }
+    int code = 0;
+    int contentLength = -1;
+    String probeError;
+    const bool ok = probeHttpUrl(url, &code, &contentLength, &probeError);
+    DynamicJsonDocument doc(320);
+    doc["ok"] = ok;
+    doc["url"] = url;
+    doc["statusCode"] = code;
+    if (contentLength >= 0) doc["contentLength"] = contentLength;
+    if (!ok && probeError.length() > 0) doc["error"] = probeError;
+    sendJson(ok ? 200 : 502, doc);
   });
 
   server.on("/api/firmware/config", HTTP_POST, []() {

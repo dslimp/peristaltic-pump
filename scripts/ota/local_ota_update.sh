@@ -18,7 +18,7 @@ Usage:
 
 Options:
   --device <url|ip>   Device base URL or IP (required)
-  --host <ip>         Host IP visible from ESP32 (default: auto-detect)
+  --host <ip>         Host IP visible from ESP32 (optional override)
   --port <port>       Local HTTP server port (default: 18080)
   --auth <user:pass>  Basic auth for device API (optional)
   --no-build          Skip PlatformIO build step
@@ -71,21 +71,8 @@ if [[ "$DEVICE_URL" != http://* && "$DEVICE_URL" != https://* ]]; then
 fi
 DEVICE_URL="${DEVICE_URL%/}"
 
-if [[ -z "$HOST_IP" ]]; then
-  if command -v ipconfig >/dev/null 2>&1; then
-    HOST_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
-    if [[ -z "$HOST_IP" ]]; then
-      HOST_IP="$(ipconfig getifaddr en1 2>/dev/null || true)"
-    fi
-  fi
-fi
-if [[ -z "$HOST_IP" ]]; then
-  echo "Cannot auto-detect host IP. Please pass --host <ip>." >&2
-  exit 1
-fi
-
 if [[ "$NO_BUILD" != "1" ]]; then
-  echo "[1/4] Build firmware and filesystem..."
+  echo "[1/6] Build firmware and filesystem..."
   (cd "$FW_DIR" && pio run -e esp32s3 && pio run -e esp32s3 -t buildfs)
 fi
 
@@ -107,41 +94,126 @@ trap cleanup EXIT
 cp "$BUILD_DIR/firmware.bin" "$TMP_DIR/firmware.bin"
 cp "$BUILD_DIR/littlefs.bin" "$TMP_DIR/littlefs.bin"
 
-echo "[2/4] Start local artifact server on ${HOST_IP}:${PORT}..."
+echo "[2/6] Start local artifact server on 0.0.0.0:${PORT}..."
 python3 -m http.server "$PORT" --bind 0.0.0.0 --directory "$TMP_DIR" >/tmp/peristaltic-local-ota.log 2>&1 &
 SERVER_PID="$!"
 sleep 1
 
-FW_URL="http://${HOST_IP}:${PORT}/firmware.bin"
-FS_URL="http://${HOST_IP}:${PORT}/littlefs.bin"
+add_candidate() {
+  local candidate="$1"
+  if [[ -z "$candidate" ]]; then return; fi
+  for existing in "${HOST_CANDIDATES[@]}"; do
+    if [[ "$existing" == "$candidate" ]]; then return; fi
+  done
+  HOST_CANDIDATES+=("$candidate")
+}
 
-echo "[3/4] Trigger OTA update on ${DEVICE_URL}..."
+extract_device_host() {
+  local raw="${DEVICE_URL#http://}"
+  raw="${raw#https://}"
+  raw="${raw%%/*}"
+  echo "${raw%%:*}"
+}
+
+HOST_CANDIDATES=()
+if [[ -n "$HOST_IP" ]]; then
+  add_candidate "$HOST_IP"
+fi
+
+DEVICE_HOST="$(extract_device_host)"
+if command -v route >/dev/null 2>&1 && command -v ipconfig >/dev/null 2>&1; then
+  IFACE="$(route -n get "$DEVICE_HOST" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)"
+  if [[ -n "$IFACE" ]]; then
+    IFACE_IP="$(ipconfig getifaddr "$IFACE" 2>/dev/null || true)"
+    add_candidate "$IFACE_IP"
+  fi
+  add_candidate "$(ipconfig getifaddr en0 2>/dev/null || true)"
+  add_candidate "$(ipconfig getifaddr en1 2>/dev/null || true)"
+fi
+
+if [[ ${#HOST_CANDIDATES[@]} -eq 0 ]]; then
+  echo "Cannot auto-detect host IP. Pass --host <ip>." >&2
+  exit 1
+fi
+
+curl_opts=(-sS --max-time 8)
+if [[ -n "$AUTH" ]]; then
+  curl_opts=(-u "$AUTH" "${curl_opts[@]}")
+fi
+
+probe_url() {
+  local url="$1"
+  curl "${curl_opts[@]}" --get --data-urlencode "url=${url}" "${DEVICE_URL}/api/firmware/probe" || true
+}
+
+PROBE_SUPPORTED="1"
+SELECTED_HOST=""
+FW_URL=""
+FS_URL=""
+
+echo "[3/6] Resolve host IP reachable from ESP32..."
+for candidate in "${HOST_CANDIDATES[@]}"; do
+  test_fw="http://${candidate}:${PORT}/firmware.bin"
+  test_fs="http://${candidate}:${PORT}/littlefs.bin"
+
+  if ! curl -fsS --max-time 5 "$test_fw" -o /dev/null; then
+    continue
+  fi
+  if ! curl -fsS --max-time 5 "$test_fs" -o /dev/null; then
+    continue
+  fi
+
+  probe_fw="$(probe_url "$test_fw")"
+  probe_fs="$(probe_url "$test_fs")"
+  if [[ "$probe_fw" == *"\"ok\":true"* && "$probe_fs" == *"\"ok\":true"* ]]; then
+    SELECTED_HOST="$candidate"
+    FW_URL="$test_fw"
+    FS_URL="$test_fs"
+    break
+  fi
+
+  if [[ "$probe_fw" == *"404"* || "$probe_fw" == *"Not Found"* || "$probe_fw" == *"\"error\":\"url query arg is required\""* ]]; then
+    PROBE_SUPPORTED="0"
+    SELECTED_HOST="$candidate"
+    FW_URL="$test_fw"
+    FS_URL="$test_fs"
+    break
+  fi
+done
+
+if [[ -z "$SELECTED_HOST" ]]; then
+  echo "No reachable host IP candidate for local OTA. Checked: ${HOST_CANDIDATES[*]}" >&2
+  echo "Server log tail:" >&2
+  tail -n 50 /tmp/peristaltic-local-ota.log >&2 || true
+  exit 1
+fi
+
+if [[ "$PROBE_SUPPORTED" == "1" ]]; then
+  echo "Selected host IP: ${SELECTED_HOST} (device probe passed)"
+else
+  echo "Selected host IP: ${SELECTED_HOST} (probe endpoint unavailable, using compatibility mode)"
+fi
+
+echo "[4/6] Trigger OTA update on ${DEVICE_URL}..."
 PAYLOAD="$(cat <<EOF
 {"mode":"url","url":"${FW_URL}","filesystemUrl":"${FS_URL}","assetName":"firmware.bin","filesystemAssetName":"littlefs.bin"}
 EOF
 )"
 
-CURL_OPTS=(-sS --max-time 180 -H "Content-Type: application/json" -X POST "${DEVICE_URL}/api/firmware/update" -d "$PAYLOAD")
-if [[ -n "$AUTH" ]]; then
-  CURL_OPTS=(-u "$AUTH" "${CURL_OPTS[@]}")
-fi
-RESPONSE="$(curl "${CURL_OPTS[@]}")"
+RESPONSE="$(curl "${curl_opts[@]}" -H "Content-Type: application/json" -X POST "${DEVICE_URL}/api/firmware/update" -d "$PAYLOAD")"
 echo "$RESPONSE"
 if [[ "$RESPONSE" == *"\"error\""* ]]; then
-  echo "OTA request failed" >&2
+  echo "OTA request failed. Server log tail:" >&2
+  tail -n 80 /tmp/peristaltic-local-ota.log >&2 || true
   exit 1
 fi
 
-echo "[4/4] Waiting for device reboot..."
+echo "[5/6] Wait for device reboot..."
 for _ in $(seq 1 60); do
-  STATE_OPTS=(-sS --max-time 4 "${DEVICE_URL}/api/state")
-  if [[ -n "$AUTH" ]]; then
-    STATE_OPTS=(-u "$AUTH" "${STATE_OPTS[@]}")
-  fi
-  STATE="$(curl "${STATE_OPTS[@]}" || true)"
+  STATE="$(curl "${curl_opts[@]}" --max-time 4 "${DEVICE_URL}/api/state" || true)"
   if [[ -n "$STATE" ]]; then
     echo "$STATE"
-    echo "Local OTA update completed."
+    echo "[6/6] Local OTA update completed."
     exit 0
   fi
   sleep 2
