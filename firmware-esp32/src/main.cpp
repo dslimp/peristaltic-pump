@@ -20,7 +20,7 @@
 #include "PumpController.h"
 
 namespace cfg {
-constexpr char kFirmwareVersion[] = "0.2.11-esp32";
+constexpr char kFirmwareVersion[] = "0.2.12-esp32";
 
 constexpr char kApSsid[] = "PeristalticPump-Setup";
 constexpr char kApPass[] = "pump12345";
@@ -121,6 +121,16 @@ bool expansionConnected = false;
 uint8_t expansionI2cAddress = 0;
 uint32_t lastExpansionDiscoveryMs = 0;
 uint32_t lastExpansionPollMs = 0;
+
+struct OtaUploadState {
+  bool ok = false;
+  bool started = false;
+  int error = 0;
+  String errorString;
+};
+
+OtaUploadState fsUploadState;
+OtaUploadState fwUploadState;
 
 struct DoseScheduleEntry {
   bool enabled = false;
@@ -258,6 +268,57 @@ bool probeHttpUrl(const String& url, int* statusCode, int* contentLength, String
   if (!ok && errorMessage) *errorMessage = String("Unexpected HTTP Code: ") + String(code);
   http.end();
   return ok;
+}
+
+void resetOtaUploadState(OtaUploadState* state) {
+  if (!state) return;
+  state->ok = false;
+  state->started = false;
+  state->error = 0;
+  state->errorString.clear();
+}
+
+void handleOtaUploadChunk(int command, OtaUploadState* state) {
+  if (!state) return;
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    resetOtaUploadState(state);
+    state->started = true;
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, command)) {
+      state->error = Update.getError();
+      state->errorString = String(Update.errorString());
+    }
+    return;
+  }
+  if (!state->started || state->error != 0) return;
+  if (upload.status == UPLOAD_FILE_WRITE) {
+    const size_t written = Update.write(upload.buf, upload.currentSize);
+    if (written != upload.currentSize) {
+      state->error = Update.getError();
+      state->errorString = String(Update.errorString());
+      Update.abort();
+    }
+    return;
+  }
+  if (upload.status == UPLOAD_FILE_END) {
+    if (!Update.end(true)) {
+      state->error = Update.getError();
+      state->errorString = String(Update.errorString());
+      return;
+    }
+    if (!Update.isFinished()) {
+      state->error = -105;
+      state->errorString = "update not finished";
+      return;
+    }
+    state->ok = true;
+    return;
+  }
+  if (upload.status == UPLOAD_FILE_ABORTED) {
+    state->error = -106;
+    state->errorString = "upload aborted";
+    Update.abort();
+  }
 }
 
 bool isValidRepoSlug(const String& value) {
@@ -1552,6 +1613,58 @@ void setupApi() {
     doc["filesystemAssetName"] = firmwareFsAssetName;
     doc["currentVersion"] = cfg::kFirmwareVersion;
     sendJson(200, doc);
+  });
+
+  server.on("/api/firmware/upload/filesystem", HTTP_POST, []() {
+    if (!ensureAuthenticated()) return;
+    if (!fsUploadState.started) {
+      DynamicJsonDocument err(192);
+      err["error"] = "upload not started";
+      sendJson(400, err);
+      return;
+    }
+    if (!fsUploadState.ok) {
+      DynamicJsonDocument err(256);
+      err["error"] = "filesystem upload failed";
+      err["updateError"] = fsUploadState.error;
+      if (fsUploadState.errorString.length() > 0) err["updateErrorString"] = fsUploadState.errorString;
+      sendJson(500, err);
+      return;
+    }
+    DynamicJsonDocument ok(192);
+    ok["ok"] = true;
+    ok["message"] = "filesystem uploaded";
+    sendJson(200, ok);
+  }, []() {
+    if (!ensureAuthenticated()) return;
+    handleOtaUploadChunk(U_SPIFFS, &fsUploadState);
+  });
+
+  server.on("/api/firmware/upload/firmware", HTTP_POST, []() {
+    if (!ensureAuthenticated()) return;
+    if (!fwUploadState.started) {
+      DynamicJsonDocument err(192);
+      err["error"] = "upload not started";
+      sendJson(400, err);
+      return;
+    }
+    if (!fwUploadState.ok) {
+      DynamicJsonDocument err(256);
+      err["error"] = "firmware upload failed";
+      err["updateError"] = fwUploadState.error;
+      if (fwUploadState.errorString.length() > 0) err["updateErrorString"] = fwUploadState.errorString;
+      sendJson(500, err);
+      return;
+    }
+    DynamicJsonDocument ok(256);
+    ok["ok"] = true;
+    ok["message"] = "firmware uploaded, restarting";
+    sendJson(200, ok);
+    delay(500);
+    ESP.restart();
+  }, []() {
+    if (!ensureAuthenticated()) return;
+    handleOtaUploadChunk(U_FLASH, &fwUploadState);
   });
 
   server.on("/api/firmware/releases", HTTP_GET, []() {

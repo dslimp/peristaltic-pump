@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.12] - 2026-02-27
+
+- release: v0.2.11
+- release: v0.2.10
+- initial import
+
 ## [0.2.11] - 2026-02-27
 
 - release: v0.2.10

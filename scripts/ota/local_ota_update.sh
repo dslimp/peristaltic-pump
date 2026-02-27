@@ -81,6 +81,46 @@ if [[ ! -f "$BUILD_DIR/firmware.bin" || ! -f "$BUILD_DIR/littlefs.bin" ]]; then
   exit 1
 fi
 
+curl_opts=(-sS --max-time 8)
+if [[ -n "$AUTH" ]]; then
+  curl_opts=(-u "$AUTH" "${curl_opts[@]}")
+fi
+
+wait_for_reboot() {
+  echo "[5/6] Wait for device reboot..."
+  for _ in $(seq 1 60); do
+    STATE="$(curl "${curl_opts[@]}" --max-time 4 "${DEVICE_URL}/api/state" || true)"
+    if [[ -n "$STATE" ]]; then
+      echo "$STATE"
+      echo "[6/6] Local OTA update completed."
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+echo "[2/6] Try direct local upload mode (no host HTTP server)..."
+FS_UPLOAD_RESPONSE="$(curl "${curl_opts[@]}" --max-time 240 -X POST -F "file=@${BUILD_DIR}/littlefs.bin;type=application/octet-stream" "${DEVICE_URL}/api/firmware/upload/filesystem" || true)"
+if [[ "$FS_UPLOAD_RESPONSE" == *"\"ok\":true"* ]]; then
+  echo "$FS_UPLOAD_RESPONSE"
+  FW_UPLOAD_RESPONSE="$(curl "${curl_opts[@]}" --max-time 240 -X POST -F "file=@${BUILD_DIR}/firmware.bin;type=application/octet-stream" "${DEVICE_URL}/api/firmware/upload/firmware" || true)"
+  echo "$FW_UPLOAD_RESPONSE"
+  if [[ "$FW_UPLOAD_RESPONSE" == *"\"ok\":true"* ]]; then
+    if wait_for_reboot; then
+      exit 0
+    fi
+    echo "Device did not come back in time." >&2
+    exit 1
+  fi
+fi
+
+if [[ "$FS_UPLOAD_RESPONSE" == *"404"* || "$FS_UPLOAD_RESPONSE" == *"Not Found"* ]]; then
+  echo "Direct upload endpoint is unavailable on device firmware. Fallback to URL mode."
+else
+  echo "Direct upload mode did not complete, fallback to URL mode."
+fi
+
 TMP_DIR="$(mktemp -d)"
 SERVER_PID=""
 cleanup() {
@@ -94,7 +134,7 @@ trap cleanup EXIT
 cp "$BUILD_DIR/firmware.bin" "$TMP_DIR/firmware.bin"
 cp "$BUILD_DIR/littlefs.bin" "$TMP_DIR/littlefs.bin"
 
-echo "[2/6] Start local artifact server on 0.0.0.0:${PORT}..."
+echo "[3/6] Start local artifact server on 0.0.0.0:${PORT}..."
 python3 -m http.server "$PORT" --bind 0.0.0.0 --directory "$TMP_DIR" >/tmp/peristaltic-local-ota.log 2>&1 &
 SERVER_PID="$!"
 sleep 1
@@ -102,7 +142,7 @@ sleep 1
 add_candidate() {
   local candidate="$1"
   if [[ -z "$candidate" ]]; then return; fi
-  for existing in "${HOST_CANDIDATES[@]}"; do
+  for existing in "${HOST_CANDIDATES[@]-}"; do
     if [[ "$existing" == "$candidate" ]]; then return; fi
   done
   HOST_CANDIDATES+=("$candidate")
@@ -115,7 +155,7 @@ extract_device_host() {
   echo "${raw%%:*}"
 }
 
-HOST_CANDIDATES=()
+declare -a HOST_CANDIDATES=()
 if [[ -n "$HOST_IP" ]]; then
   add_candidate "$HOST_IP"
 fi
@@ -136,11 +176,6 @@ if [[ ${#HOST_CANDIDATES[@]} -eq 0 ]]; then
   exit 1
 fi
 
-curl_opts=(-sS --max-time 8)
-if [[ -n "$AUTH" ]]; then
-  curl_opts=(-u "$AUTH" "${curl_opts[@]}")
-fi
-
 probe_url() {
   local url="$1"
   curl "${curl_opts[@]}" --get --data-urlencode "url=${url}" "${DEVICE_URL}/api/firmware/probe" || true
@@ -151,7 +186,7 @@ SELECTED_HOST=""
 FW_URL=""
 FS_URL=""
 
-echo "[3/6] Resolve host IP reachable from ESP32..."
+echo "[4/6] Resolve host IP reachable from ESP32..."
 for candidate in "${HOST_CANDIDATES[@]}"; do
   test_fw="http://${candidate}:${PORT}/firmware.bin"
   test_fs="http://${candidate}:${PORT}/littlefs.bin"
@@ -208,16 +243,8 @@ if [[ "$RESPONSE" == *"\"error\""* ]]; then
   exit 1
 fi
 
-echo "[5/6] Wait for device reboot..."
-for _ in $(seq 1 60); do
-  STATE="$(curl "${curl_opts[@]}" --max-time 4 "${DEVICE_URL}/api/state" || true)"
-  if [[ -n "$STATE" ]]; then
-    echo "$STATE"
-    echo "[6/6] Local OTA update completed."
-    exit 0
-  fi
-  sleep 2
-done
-
+if wait_for_reboot; then
+  exit 0
+fi
 echo "Device did not come back in time." >&2
 exit 1

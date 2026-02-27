@@ -570,6 +570,14 @@ class FirmwareApiServer:
                     )
                     return
 
+                if path == "/api/firmware/upload/filesystem":
+                    self._json_response(200, {"ok": True, "message": "filesystem uploaded"})
+                    return
+
+                if path == "/api/firmware/upload/firmware":
+                    self._json_response(200, {"ok": True, "message": "firmware uploaded, restarting"})
+                    return
+
                 if path == "/api/firmware/update":
                     if body is None:
                         self._json_response(400, {"error": "invalid json"})
