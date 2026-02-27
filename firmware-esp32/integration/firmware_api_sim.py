@@ -35,7 +35,7 @@ class PumpModel:
         self.selected_motor_id = 0
         self.expansion_enabled = True
         self.expansion_motor_count = 4
-        self.expansion_interface = "i2c"
+        self.expansion_interface = "rs485"
         self.expansion_connected = True
         self.growth_program_enabled = False
         self.ph_regulation_enabled = False
@@ -117,9 +117,10 @@ class PumpModel:
                     self.running = False
 
     def active_motor_count(self) -> int:
+        base_motors = 5
         if not self.expansion_enabled:
-            return 1
-        return 1 + max(0, min(4, int(self.expansion_motor_count)))
+            return base_motors
+        return base_motors + max(0, min(4, int(self.expansion_motor_count)))
 
     def _read_motor_id(self, value: Any, default: int = 0) -> int | None:
         if value is None:
@@ -485,7 +486,7 @@ class FirmwareApiServer:
                                 model.expansion_enabled = exp["enabled"]
                             if isinstance(exp.get("motorCount"), (int, float)):
                                 model.expansion_motor_count = max(0, min(4, int(exp["motorCount"])))
-                            if isinstance(exp.get("interface"), str) and exp["interface"] in {"i2c", "rs485", "uart"}:
+                            if isinstance(exp.get("interface"), str) and exp["interface"] in {"rs485", "uart"}:
                                 model.expansion_interface = exp["interface"]
                         model.target_speed = max(-model.max_speed, min(model.max_speed, model.target_speed))
                         model.current_speed = max(-model.max_speed, min(model.max_speed, model.current_speed))

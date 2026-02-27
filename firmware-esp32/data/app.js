@@ -1655,7 +1655,7 @@ async function refreshSettings() {
     }
     if (settings.expansion) {
       document.getElementById('expansionEnabled').checked = !!settings.expansion.enabled;
-      document.getElementById('expansionInterface').value = settings.expansion.interface || 'i2c';
+      document.getElementById('expansionInterface').value = settings.expansion.interface || 'rs485';
       document.getElementById('expansionMotorCount').value = Number(settings.expansion.motorCount || 0);
       ensureMotorSelectors((settings.expansion.enabled ? Number(settings.expansion.motorCount || 0) : 0) + 1);
     }

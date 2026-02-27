@@ -106,7 +106,7 @@ def test_settings_and_validation(api_server: tuple[FirmwareApiServer, str]) -> N
             "maxFlowLph": 20.0,
             "growthProgramEnabled": True,
             "phRegulationEnabled": True,
-            "expansion": {"enabled": True, "interface": "i2c", "motorCount": 4},
+            "expansion": {"enabled": True, "interface": "rs485", "motorCount": 4},
         },
     )
     assert code == 200
